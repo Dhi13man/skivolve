@@ -11,13 +11,14 @@ import re
 import stat
 import subprocess
 import tempfile
+from collections.abc import Callable
 from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any
 
 
-EVALUATOR_VERSION = "2.3.0"
+EVALUATOR_VERSION = "1.0.0"
 SHARED_RUNTIME_ADAPTER_ID = "shared-harness-claude-cli-v1"
 PRODUCTION_TIMEOUT_SECONDS = 300
 PRODUCTION_PER_INVOCATION_BUDGET_USD = 1.0
@@ -66,7 +67,7 @@ EXPECTED_OUTCOME_RULE = {
     },
 }
 EVIDENCE_SCHEMA_CONTRACT_SHA256 = (
-    "61f2ece9cec3321d71c7babf0b3ab98ea949007bc07943aaf6c236a92f64d4e9"
+    "62ddc610bb88f67154fb2571db43e6045e9df3613078b1e8e8170edeff8a6b34"
 )
 OUTCOMES = ("A", "B", "tie", "tradeoff", "unqualified")
 REQUIREMENT_STATUSES = {"satisfied", "violated", "unknown"}
@@ -507,26 +508,108 @@ def derive_outcome(
     return "tie"
 
 
-def _label_set(
-    pair: dict[str, Any],
-    value: Any,
-    location: str,
-    *,
-    semantic_contract: dict[str, Any],
-    resolution: bool = False,
-    legacy: bool = False,
-) -> dict[str, Any]:
-    keys = {"reviewer_id", "eligibility", "criteria", "rationale"}
-    if resolution:
-        keys.add("method")
-    data = _exact(value, keys, location)
-    reviewer_id = _text(data["reviewer_id"], f"{location}.reviewer_id")
-    rationale = _text(data["rationale"], f"{location}.rationale", 20)
-    if resolution and data["method"] not in {
-        "independent-agreement",
-        "root-resolution",
-    }:
+def _review_label_data(value: Any, location: str) -> dict[str, Any]:
+    return _exact(
+        value,
+        {"reviewer_id", "eligibility", "criteria", "rationale"},
+        location,
+    )
+
+
+def _resolution_label_data(value: Any, location: str) -> dict[str, Any]:
+    data = _exact(
+        value,
+        {"reviewer_id", "eligibility", "criteria", "rationale", "method"},
+        location,
+    )
+    if data["method"] not in {"independent-agreement", "root-resolution"}:
         raise CalibrationError(f"{location}.method is unsupported")
+    return data
+
+
+def _decision(
+    value: Any,
+    keys: set[str],
+    requirement_ids: set[str],
+    location: str,
+) -> tuple[dict[str, Any], list[str]]:
+    decision = _exact(value, keys, location)
+    if decision["decision"] not in ELIGIBILITY:
+        raise CalibrationError(f"{location}.decision is invalid")
+    violations = decision["violations"]
+    if (
+        not isinstance(violations, list)
+        or len(violations) != len(set(violations))
+        or not set(violations) <= requirement_ids
+    ):
+        raise CalibrationError(f"{location}.violations is invalid")
+    if decision["decision"] == "ineligible" and not violations:
+        raise CalibrationError(f"{location} ineligible decision needs a violation")
+    if decision["decision"] != "ineligible" and violations:
+        raise CalibrationError(
+            f"{location} non-ineligible decision cannot list violations"
+        )
+    return decision, violations
+
+
+def _historical_decision(
+    value: Any, requirement_ids: set[str], location: str
+) -> dict[str, Any]:
+    decision, violations = _decision(
+        value,
+        {"decision", "violations"},
+        requirement_ids,
+        location,
+    )
+    requirement_statuses = {
+        requirement_id: ("violated" if requirement_id in violations else "satisfied")
+        for requirement_id in requirement_ids
+    }
+    return {
+        "decision": decision["decision"],
+        "violations": tuple(violations),
+        "requirement_statuses": dict(sorted(requirement_statuses.items())),
+    }
+
+
+def _scoring_decision(
+    value: Any, requirement_ids: set[str], location: str
+) -> dict[str, Any]:
+    decision, violations = _decision(
+        value,
+        {"decision", "violations", "requirement_statuses"},
+        requirement_ids,
+        location,
+    )
+    requirement_statuses = _exact(
+        decision["requirement_statuses"],
+        requirement_ids,
+        f"{location}.requirement_statuses",
+    )
+    if not set(requirement_statuses.values()) <= REQUIREMENT_STATUSES:
+        raise CalibrationError(f"{location}.requirement_statuses is invalid")
+    derived_violations = {
+        requirement_id
+        for requirement_id, status in requirement_statuses.items()
+        if status == "violated"
+    }
+    if derived_violations != set(violations):
+        raise CalibrationError(f"{location} violations differ from statuses")
+    if derive_eligibility(requirement_statuses) != decision["decision"]:
+        raise CalibrationError(f"{location} decision differs from statuses")
+    return {
+        "decision": decision["decision"],
+        "violations": tuple(violations),
+        "requirement_statuses": dict(sorted(requirement_statuses.items())),
+    }
+
+
+def _normalized_eligibility(
+    pair: dict[str, Any],
+    data: dict[str, Any],
+    location: str,
+    decision_parser: Callable[[Any, set[str], str], dict[str, Any]],
+) -> tuple[dict[str, str], dict[str, dict[str, Any]]]:
     requirement_ids = {
         requirement["id"] for requirement in pair["contract"]["requirements"]
     }
@@ -536,94 +619,138 @@ def _label_set(
     eligibility: dict[str, str] = {}
     normalized_decisions: dict[str, dict[str, Any]] = {}
     for side in ("A", "B"):
-        decision_keys = {"decision", "violations"}
-        if not legacy:
-            decision_keys.add("requirement_statuses")
-        decision = _exact(
-            eligibility_data[side],
-            decision_keys,
-            f"{location}.eligibility.{side}",
+        decision_location = f"{location}.eligibility.{side}"
+        normalized = decision_parser(
+            eligibility_data[side], requirement_ids, decision_location
         )
-        if decision["decision"] not in ELIGIBILITY:
-            raise CalibrationError(f"{location}.eligibility.{side}.decision is invalid")
-        violations = decision["violations"]
-        if (
-            not isinstance(violations, list)
-            or len(violations) != len(set(violations))
-            or not set(violations) <= requirement_ids
-        ):
-            raise CalibrationError(
-                f"{location}.eligibility.{side}.violations is invalid"
-            )
-        if decision["decision"] == "ineligible" and not violations:
-            raise CalibrationError(f"{location} ineligible decision needs a violation")
-        if decision["decision"] != "ineligible" and violations:
-            raise CalibrationError(
-                f"{location} non-ineligible decision cannot list violations"
-            )
-        if legacy:
-            requirement_statuses = {
-                requirement_id: (
-                    "violated" if requirement_id in violations else "satisfied"
-                )
-                for requirement_id in requirement_ids
-            }
-        else:
-            requirement_statuses = _exact(
-                decision["requirement_statuses"],
-                requirement_ids,
-                f"{location}.eligibility.{side}.requirement_statuses",
-            )
-            if not set(requirement_statuses.values()) <= REQUIREMENT_STATUSES:
-                raise CalibrationError(
-                    f"{location}.eligibility.{side}.requirement_statuses is invalid"
-                )
-            derived_violations = {
-                requirement_id
-                for requirement_id, status in requirement_statuses.items()
-                if status == "violated"
-            }
-            if derived_violations != set(violations):
-                raise CalibrationError(
-                    f"{location}.eligibility.{side} violations differ from statuses"
-                )
-            if derive_eligibility(requirement_statuses) != decision["decision"]:
-                raise CalibrationError(
-                    f"{location}.eligibility.{side} decision differs from statuses"
-                )
-        eligibility[side] = decision["decision"]
-        normalized_decisions[side] = {
-            "decision": decision["decision"],
-            "violations": tuple(violations),
-            "requirement_statuses": dict(sorted(requirement_statuses.items())),
-        }
-    criterion_ids = tuple(semantic_contract["criterion_ids"])
-    winners = data["criteria"]
-    both_eligible = eligibility == {"A": "eligible", "B": "eligible"}
-    criteria: dict[str, str] | None
-    if winners is None:
-        criteria = None
-    elif (
-        isinstance(winners, list)
-        and len(winners) == len(criterion_ids)
-        and set(winners) <= WINNERS
+        eligibility[side] = normalized["decision"]
+        normalized_decisions[side] = normalized
+    return eligibility, normalized_decisions
+
+
+def _criterion_vector(
+    value: Any, criterion_ids: tuple[str, ...], location: str
+) -> dict[str, str] | None:
+    if value is None:
+        return None
+    if (
+        isinstance(value, list)
+        and len(value) == len(criterion_ids)
+        and set(value) <= WINNERS
     ):
-        criteria = dict(zip(criterion_ids, winners, strict=True))
-    else:
-        raise CalibrationError(
-            f"{location}.criteria must be null or the locked criterion winners"
-        )
+        return dict(zip(criterion_ids, value, strict=True))
+    raise CalibrationError(
+        f"{location}.criteria must be null or the locked criterion winners"
+    )
+
+
+def _normalized_label(
+    data: dict[str, Any],
+    reviewer_id: str,
+    rationale: str,
+    eligibility: dict[str, str],
+    normalized_decisions: dict[str, dict[str, Any]],
+    criteria: dict[str, str] | None,
+    criterion_ids: tuple[str, ...],
+) -> dict[str, Any]:
+    effective_criteria = (
+        criteria if eligibility == {"A": "eligible", "B": "eligible"} else None
+    )
+    return {
+        "reviewer_id": reviewer_id,
+        "eligibility": normalized_decisions,
+        "criteria": criteria,
+        "outcome": derive_outcome(eligibility, effective_criteria, criterion_ids),
+        "rationale": rationale,
+        "method": data.get("method"),
+    }
+
+
+def _historical_label_set_from_data(
+    pair: dict[str, Any],
+    data: dict[str, Any],
+    location: str,
+    semantic_contract: dict[str, Any],
+) -> dict[str, Any]:
+    reviewer_id = _text(data["reviewer_id"], f"{location}.reviewer_id")
+    rationale = _text(data["rationale"], f"{location}.rationale", 20)
+    eligibility, normalized_decisions = _normalized_eligibility(
+        pair, data, location, _historical_decision
+    )
+    criterion_ids = tuple(semantic_contract["criterion_ids"])
+    criteria = _criterion_vector(data["criteria"], criterion_ids, location)
+    both_eligible = eligibility == {"A": "eligible", "B": "eligible"}
     if both_eligible and criteria is None:
         raise CalibrationError(
             f"{location} needs criteria because both candidates qualify"
         )
-    if not both_eligible and criteria is not None and not legacy:
+    return _normalized_label(
+        data,
+        reviewer_id,
+        rationale,
+        eligibility,
+        normalized_decisions,
+        criteria,
+        criterion_ids,
+    )
+
+
+def _historical_review_label_set(
+    pair: dict[str, Any],
+    value: Any,
+    location: str,
+    *,
+    semantic_contract: dict[str, Any],
+) -> dict[str, Any]:
+    return _historical_label_set_from_data(
+        pair,
+        _review_label_data(value, location),
+        location,
+        semantic_contract,
+    )
+
+
+def _historical_resolution_label_set(
+    pair: dict[str, Any],
+    value: Any,
+    location: str,
+    *,
+    semantic_contract: dict[str, Any],
+) -> dict[str, Any]:
+    return _historical_label_set_from_data(
+        pair,
+        _resolution_label_data(value, location),
+        location,
+        semantic_contract,
+    )
+
+
+def _scoring_label_set(
+    pair: dict[str, Any],
+    value: Any,
+    location: str,
+    *,
+    semantic_contract: dict[str, Any],
+) -> dict[str, Any]:
+    data = _resolution_label_data(value, location)
+    reviewer_id = _text(data["reviewer_id"], f"{location}.reviewer_id")
+    rationale = _text(data["rationale"], f"{location}.rationale", 20)
+    eligibility, normalized_decisions = _normalized_eligibility(
+        pair, data, location, _scoring_decision
+    )
+    criterion_ids = tuple(semantic_contract["criterion_ids"])
+    criteria = _criterion_vector(data["criteria"], criterion_ids, location)
+    both_eligible = eligibility == {"A": "eligible", "B": "eligible"}
+    if both_eligible and criteria is None:
+        raise CalibrationError(
+            f"{location} needs criteria because both candidates qualify"
+        )
+    if not both_eligible and criteria is not None:
         raise CalibrationError(
             f"{location} must use null criteria for ineligible candidates"
         )
     if (
-        not legacy
-        and criteria is not None
+        criteria is not None
         and semantic_contract["performance_criterion"] is not None
         and criteria[semantic_contract["performance_criterion"]] != "tie"
         and not pair["contract"]["performance_basis"]
@@ -631,7 +758,7 @@ def _label_set(
         raise CalibrationError(
             f"{location} claims a performance winner without a performance basis"
         )
-    if not legacy and criteria is not None:
+    if criteria is not None:
         for criterion in semantic_contract["qualitative_basis_criteria"]:
             if (
                 criteria[criterion] != "tie"
@@ -640,16 +767,15 @@ def _label_set(
                 raise CalibrationError(
                     f"{location} claims {criterion} without a typed qualitative basis"
                 )
-    effective_criteria = criteria if both_eligible else None
-    outcome = derive_outcome(eligibility, effective_criteria, criterion_ids)
-    return {
-        "reviewer_id": reviewer_id,
-        "eligibility": normalized_decisions,
-        "criteria": criteria,
-        "outcome": outcome,
-        "rationale": rationale,
-        "method": data.get("method"),
-    }
+    return _normalized_label(
+        data,
+        reviewer_id,
+        rationale,
+        eligibility,
+        normalized_decisions,
+        criteria,
+        criterion_ids,
+    )
 
 
 def _same_labels(left: dict[str, Any], right: dict[str, Any]) -> bool:
@@ -718,7 +844,7 @@ def validate_semantic_contract(contract: dict[str, Any]) -> dict[str, Any]:
         raise CalibrationError("semantic contract request adapter is unsupported")
     if contract["response_adapter"] != "requirement-vector-v1":
         raise CalibrationError("semantic contract response adapter is unsupported")
-    if contract["evidence_adapter"] != "offline-trials-v2":
+    if contract["evidence_adapter"] != "offline-trials-v1":
         raise CalibrationError("semantic contract evidence adapter is unsupported")
     if contract["artifact_kinds"] != ["workspace_diff"]:
         raise CalibrationError("semantic contract artifact kinds are unsupported")
@@ -1259,7 +1385,7 @@ def validate_manifest(
         {"$schema", "schema_version", "corpus_id", "review_policy", "pairs"},
         "manifest",
     )
-    if manifest["$schema"] != "manifest.schema.json" or manifest["schema_version"] != 2:
+    if manifest["$schema"] != "manifest.schema.json" or manifest["schema_version"] != 1:
         raise CalibrationError("manifest schema lock is invalid")
     if manifest["corpus_id"] != semantic_contract["corpus_id"]:
         raise CalibrationError("manifest corpus_id is invalid")
@@ -1505,12 +1631,11 @@ def validate_manifest(
             },
             f"{location}.adjudication",
         )
-        reviewer_a = _label_set(
+        reviewer_a = _historical_review_label_set(
             pair,
             adjudication["reviewer_a"],
             f"{location}.reviewer_a",
             semantic_contract=semantic_contract,
-            legacy=True,
         )
         reviewer_ids.add(reviewer_a["reviewer_id"])
         author_outcomes[reviewer_a["outcome"]] += 1
@@ -1536,24 +1661,22 @@ def validate_manifest(
                 )
             unresolved.append(pair_id)
             continue
-        reviewer_b = _label_set(
+        reviewer_b = _historical_review_label_set(
             pair,
             reviewer_b_raw,
             f"{location}.reviewer_b",
             semantic_contract=semantic_contract,
-            legacy=True,
         )
         if reviewer_b["reviewer_id"] == reviewer_a["reviewer_id"]:
             raise CalibrationError(
                 f"{location} reviewers must be independently identified"
             )
         reviewer_ids.add(reviewer_b["reviewer_id"])
-        re_review = _label_set(
+        re_review = _historical_review_label_set(
             pair,
             re_review_raw,
             f"{location}.re_review",
             semantic_contract=semantic_contract,
-            legacy=True,
         )
         if re_review["reviewer_id"] == reviewer_a["reviewer_id"]:
             raise CalibrationError(
@@ -1565,20 +1688,17 @@ def validate_manifest(
             if not _same_labels(reviewer_a, reviewer_b):
                 disagreements.append(pair_id)
             continue
-        resolution = _label_set(
+        resolution = _historical_resolution_label_set(
             pair,
             resolution_raw,
             f"{location}.resolution",
             semantic_contract=semantic_contract,
-            resolution=True,
-            legacy=True,
         )
-        scoring_gold = _label_set(
+        scoring_gold = _scoring_label_set(
             pair,
             scoring_gold_raw,
             f"{location}.scoring_gold",
             semantic_contract=semantic_contract,
-            resolution=True,
         )
         if not _same_labels(reviewer_a, reviewer_b):
             disagreements.append(pair_id)
@@ -1802,12 +1922,11 @@ def _validate_release(
             "criterion_support",
             "invocation_namespace_sha256",
             "runtime_adapter",
-            "gold_source",
             "trust_boundary_note",
         },
         "release",
     )
-    if release["schema_version"] != 2 or not isinstance(release["test_release"], bool):
+    if release["schema_version"] != 1 or not isinstance(release["test_release"], bool):
         raise CalibrationError("release schema lock is invalid")
     _text(release["release_id"], "release.release_id")
     _text(release["trust_boundary_note"], "release.trust_boundary_note", 40)
@@ -1933,10 +2052,6 @@ def _validate_release(
             "allowed_auxiliary_model_prefixes": ["claude-haiku"],
         }:
             raise CalibrationError("production release judge is not fully pinned")
-        if release["gold_source"] != "scoring_gold":
-            raise CalibrationError("production release must use expanded scoring gold")
-    elif release["gold_source"] != "scoring_gold":
-        raise CalibrationError("test release must exercise expanded scoring gold")
     sampling = _exact(
         release["sampling"],
         {"sentinel_repetitions", "ordinary_repetitions", "cli_args"},
@@ -2047,8 +2162,6 @@ def _validate_release(
             "prepare_holdout_plan_source_sha256",
             "baseline_authority_source_sha256",
             "frozen_original_commit",
-            "shared_harness_compatible",
-            "blocker",
         },
         "release.runtime_adapter",
     )
@@ -2119,14 +2232,8 @@ def _validate_release(
             raise CalibrationError(f"release {field} source hash is invalid")
         if source_path is not None and source_sha256 != file_sha256(source_path):
             raise CalibrationError(f"release {field} source hash is stale")
-    if not isinstance(runtime_adapter["shared_harness_compatible"], bool):
-        raise CalibrationError("release runtime compatibility must be boolean")
     if runtime_adapter["id"] != SHARED_RUNTIME_ADAPTER_ID:
         raise CalibrationError("release runtime adapter identity is stale")
-    if not runtime_adapter["shared_harness_compatible"]:
-        _text(runtime_adapter["blocker"], "release.runtime_adapter.blocker", 40)
-    elif runtime_adapter["blocker"] is not None:
-        raise CalibrationError("compatible runtime adapter cannot retain a blocker")
     return {
         "release_sha256": canonical_sha256(release),
         "release_id": release["release_id"],
@@ -2160,7 +2267,6 @@ def validate_profile_release(
 def validate_packaged_release_bindings(
     bundle: Bundle,
     *,
-    suite_root: Path,
     suite_manifest_path: Path,
     runtime_source_root: Path,
 ) -> None:
@@ -2168,20 +2274,10 @@ def validate_packaged_release_bindings(
 
     release = bundle.release
     runtime_adapter = release["runtime_adapter"]
-    authority_path = suite_root / "baseline-authority.json"
     suite = load_json(suite_manifest_path)
     schema_version = suite.get("schema_version")
-    if not isinstance(schema_version, int) or isinstance(schema_version, bool):
-        raise CalibrationError("suite schema version is invalid")
-    if schema_version < 5:
-        authority_commit = require_baseline_authority(
-            suite_manifest_path,
-            authority_path,
-        )
-        if runtime_adapter["frozen_original_commit"] != authority_commit:
-            raise CalibrationError(
-                "release frozen original commit differs from baseline authority"
-            )
+    if type(schema_version) is not int or schema_version != 1:
+        raise CalibrationError("suite schema_version must be 1")
     runtime_sources = {
         "source_sha256": runtime_source_root / "comparator_runtime.py",
         "harness_runner_source_sha256": runtime_source_root / "runner.py",
@@ -2197,8 +2293,6 @@ def validate_packaged_release_bindings(
         "holdout_plan_source_sha256": runtime_source_root / "holdout_plan.py",
         "prepare_holdout_plan_source_sha256": runtime_source_root / "holdout_cli.py",
     }
-    if schema_version < 5:
-        runtime_sources["baseline_authority_source_sha256"] = authority_path
     for field, source_path in runtime_sources.items():
         if runtime_adapter[field] != file_sha256(source_path):
             raise CalibrationError(f"release {field} source hash is stale")
@@ -2838,7 +2932,7 @@ def evaluate_evidence(
         },
         "evidence",
     )
-    if evidence["schema_version"] != 2 or isinstance(evidence["schema_version"], bool):
+    if evidence["schema_version"] != 1 or isinstance(evidence["schema_version"], bool):
         raise CalibrationError("evidence schema version is invalid")
     expected_hashes = {
         "release_sha256": release_summary["release_sha256"],
@@ -3178,7 +3272,6 @@ def evaluate_evidence(
             for repetition in range(pair["repetitions"])
         ]:
             sentinel_instability.append(pair["id"])
-    gold_field = bundle.release["gold_source"]
     expected_outcomes: list[str] = []
     observed_outcomes: list[str] = []
     expected_eligibility: list[str] = []
@@ -3203,15 +3296,14 @@ def evaluate_evidence(
     unsupported_qualitative_failures: list[dict[str, Any]] = []
     pair_results: list[dict[str, Any]] = []
     for pair in bundle.manifest["pairs"]:
-        raw_gold = pair["adjudication"][gold_field]
+        raw_gold = pair["adjudication"]["scoring_gold"]
         if raw_gold is None:
             continue
-        gold = _label_set(
+        gold = _scoring_label_set(
             pair,
             raw_gold,
             f"pair {pair['id']} gold",
             semantic_contract=bundle.semantic_contract,
-            resolution=gold_field in {"resolution", "scoring_gold"},
         )
         repetitions = [
             per_repetition.get((pair["id"], repetition))
@@ -3378,8 +3470,6 @@ def evaluate_evidence(
         }
     acceptance = bundle.release["acceptance"]
     gates = {
-        "runtime_adapter_compatibility": bundle.release["test_release"]
-        or bundle.release["runtime_adapter"]["shared_harness_compatible"],
         "adjudication_complete": manifest_summary["adjudication_complete"]
         or bundle.release["test_release"],
         "outcome_balanced_accuracy": outcome_ba

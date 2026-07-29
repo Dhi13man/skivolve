@@ -380,7 +380,7 @@ def main() -> None:
     manifest["review_policy"] = {
         "historical_rubric_version": "2.0.0",
         "effective_rubric_version": "2.1.0",
-        "scoring_protocol_version": "2.3.0",
+        "scoring_protocol_version": "1.0.0",
         "resolution_authority": ROOT_REVIEWER,
         "history_rule": "reviewer_a and reviewer_b preserve the original separately executed v2 comparison records; re_review and resolution apply v2.1 eligibility-first criterion applicability. Semantic case IDs were visible to reviewers, so these records are not claimed to be blinded or cryptographically independent.",
     }

@@ -39,7 +39,7 @@ def _release(*, test: bool) -> dict[str, Any]:
     semantic = load_json(ROOT / "semantic-contract.json")
     reviews = review_artifact_hashes(manifest)
     release["release_id"] = (
-        "plain-language-revision-test-v1.0" if test else "plain-language-revision-v1.0"
+        "plain-language-revision-test-v1" if test else "plain-language-revision-v1"
     )
     release["artifacts"].update(
         {
@@ -64,7 +64,7 @@ def _release(*, test: bool) -> dict[str, Any]:
         }
     )
     release["evaluator"] = {
-        "version": "2.3.0",
+        "version": "1.0.0",
         "source_sha256": file_sha256(SHARED / "calibration.py"),
         "collector_source_sha256": file_sha256(SHARED / "collect.py"),
         "certifier_source_sha256": file_sha256(SHARED / "certify.py"),
@@ -74,7 +74,7 @@ def _release(*, test: bool) -> dict[str, Any]:
     )
     release["criterion_support"] = criterion_support(manifest, semantic)
     release["invocation_namespace_sha256"] = hashlib.sha256(
-        b"skivolve:plain-language-revision-v1:invocations:v2"
+        b"skivolve:plain-language-revision-v1:invocations:v1"
     ).hexdigest()
     runtime_sources = {
         "source_sha256": PROJECT_ROOT / "skivolve/comparator_runtime.py",
@@ -131,7 +131,7 @@ def main() -> None:
     profiles = [
         _authority_entry(
             software_root,
-            "software-engineering-v2.3",
+            "software-engineering-v1",
             "production",
             (software_root / "release.json").read_bytes(),
             (software_root / "tests/test-release.json").read_bytes(),
@@ -139,7 +139,7 @@ def main() -> None:
         _authority_entry(ROOT, PROFILE_ID, "test", production, test),
     ]
     authority = _encoded(
-        {"schema_version": 2, "profiles": sorted(profiles, key=lambda item: item["id"])}
+        {"schema_version": 1, "profiles": sorted(profiles, key=lambda item: item["id"])}
     )
     (ROOT / "release.json").write_bytes(production)
     (ROOT / "tests").mkdir(parents=True, exist_ok=True)

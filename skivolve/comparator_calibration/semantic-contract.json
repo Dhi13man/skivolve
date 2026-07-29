@@ -3,7 +3,7 @@
   "engine_strategy": "eligibility-pareto-v1",
   "request_adapter": "workspace-diff-v1",
   "response_adapter": "requirement-vector-v1",
-  "evidence_adapter": "offline-trials-v2",
+  "evidence_adapter": "offline-trials-v1",
   "artifact_kinds": [
     "workspace_diff"
   ],
@@ -40,12 +40,12 @@
     "failure-determinism",
     "concurrency-margin"
   ],
-  "request_template_id": "software-engineering-comparator-request-v3",
-  "corpus_id": "software-engineering-comparator-v2",
+  "request_template_id": "software-engineering-comparator-request-v1",
+  "corpus_id": "software-engineering-comparator-v1",
   "review_policy": {
     "historical_rubric_version": "2.0.0",
     "effective_rubric_version": "2.1.0",
-    "scoring_protocol_version": "2.3.0",
+    "scoring_protocol_version": "1.0.0",
     "resolution_authority": "resolution-reviewer-v2"
   },
   "calibration_policy": {

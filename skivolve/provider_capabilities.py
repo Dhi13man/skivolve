@@ -16,7 +16,7 @@ class ProviderCapabilityError(ValueError):
 @dataclass(frozen=True)
 class ProviderCapabilities:
     adapter_id: str
-    legacy_kind: str
+    provider_kind: str
     contract_revision: int
     roles: tuple[str, ...]
     concurrency: str
@@ -42,7 +42,7 @@ class ProviderCapabilities:
             },
             "concurrency": self.concurrency,
             "contract_revision": self.contract_revision,
-            "legacy_kind": self.legacy_kind,
+            "provider_kind": self.provider_kind,
             "provenance_fields": list(self.provenance_fields),
             "roles": list(self.roles),
             "sandbox_kind": self.sandbox_kind,
@@ -61,8 +61,8 @@ _CAPABILITIES: Mapping[str, ProviderCapabilities] = MappingProxyType(
     {
         "claude-cli": ProviderCapabilities(
             adapter_id="claude-cli",
-            legacy_kind="claude",
-            contract_revision=3,
+            provider_kind="claude",
+            contract_revision=1,
             roles=("comparison", "generation"),
             concurrency="concurrent",
             sandbox_kind="systemd-run-user+claude-native-tool-sandbox",
@@ -85,8 +85,8 @@ _CAPABILITIES: Mapping[str, ProviderCapabilities] = MappingProxyType(
         ),
         "codex-app-server": ProviderCapabilities(
             adapter_id="codex-app-server",
-            legacy_kind="codex",
-            contract_revision=2,
+            provider_kind="codex",
+            contract_revision=1,
             roles=("generation",),
             concurrency="serialized",
             sandbox_kind="systemd-run-user+codex-permission-profile",
@@ -117,8 +117,8 @@ _CAPABILITIES: Mapping[str, ProviderCapabilities] = MappingProxyType(
         ),
         "deterministic-fake": ProviderCapabilities(
             adapter_id="deterministic-fake",
-            legacy_kind="fake",
-            contract_revision=2,
+            provider_kind="fake",
+            contract_revision=1,
             roles=("comparison", "generation"),
             concurrency="concurrent",
             sandbox_kind="fake",
@@ -134,12 +134,6 @@ _CAPABILITIES: Mapping[str, ProviderCapabilities] = MappingProxyType(
                 "workspace_diff",
             ),
         ),
-    }
-)
-_LEGACY_ADAPTER_IDS = MappingProxyType(
-    {
-        capabilities.legacy_kind: adapter_id
-        for adapter_id, capabilities in _CAPABILITIES.items()
     }
 )
 
@@ -158,13 +152,6 @@ def capabilities_for(
             f"provider adapter {adapter_id} does not support the {role} role"
         )
     return capabilities
-
-
-def adapter_id_for_legacy_kind(kind: str) -> str:
-    try:
-        return _LEGACY_ADAPTER_IDS[kind]
-    except KeyError as exc:
-        raise ProviderCapabilityError(f"unknown legacy provider kind: {kind}") from exc
 
 
 def reviewed_capabilities() -> Mapping[str, ProviderCapabilities]:

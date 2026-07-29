@@ -4,16 +4,26 @@ All notable changes to Skivolve are documented in this file. The format follows 
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-07-29
+
 ### Changed
 
+- Made suite schema v1 and holdout-plan schema v1 the only accepted wire contracts and established `software-engineering-v1` as the production comparator profile.
+- Required every suite to declare its evaluation mode, adapter identities, verifier-resource boundary, release comparisons, bundle sources, and artifact contracts explicitly.
+- Reworked the README and website around installation, one runnable comparison, the current suite contract, and the project's claim limits.
 - Reclassified holdout reviewer labels and record locators as operator-declared provenance rather than authenticated review evidence.
-- Advanced the Claude provider capability to revision 3 and bound its sandbox runtime, seccomp helper, and enforcement canary into provider authority.
+- Bound the revision-1 Claude provider capability, sandbox runtime, seccomp helper, and enforcement canary into provider authority.
 - Bounded generator and comparator subprocess output, timeout cleanup, and process-group termination.
 - Replaced `ProtectKernelTunables` and `ProtectKernelLogs` in the verifier, Claude agent, and comparator units with a `syslog(2)` seccomp denial, because systemd 256-or-newer user managers enforce those `/proc` over-mounts and the kernel then rejects the nested candidate namespace. Tunable writes stay blocked by the unprivileged user namespace and `/dev/kmsg` stays absent under `PrivateDevices`. The verifier preflight probe now exercises the exact shared isolation property set instead of a weaker copy.
 
+### Removed
+
+- Removed the earlier multi-version suite and holdout-plan contracts, implicit bundle and shared-resource discovery, legacy provider names, and compatibility-only source-authority paths.
+
 ### Migration
 
-- Re-prepare unconsumed holdout plans that bind the Claude capability revision 2 authority; reviewed or consumed plans remain immutable.
+- Rewrite suites as schema v1 with `evaluation_mode`, adapter-based providers, `shared_verifier_dir`, `holdout`, per-case `bundle_source`, and per-case `artifact_contract` fields.
+- Re-prepare unconsumed holdout plans with Skivolve 0.5.0. Version 0.5.0 does not read earlier suite or plan formats; use the release that created a historical artifact to inspect it, and never rewrite reviewed or consumed evidence.
 
 ### Security
 
@@ -107,7 +117,8 @@ All notable changes to Skivolve are documented in this file. The format follows 
 - Repository-local `engineering` and `testing` reference bundles for exercising Git-bound comparison variants.
 - CI, CodeQL, OpenSSF Scorecard, Dependabot, issue forms, contribution policy, security reporting, governance, support, and release documentation.
 
-[Unreleased]: https://github.com/Dhi13man/skivolve/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/Dhi13man/skivolve/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/Dhi13man/skivolve/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/Dhi13man/skivolve/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/Dhi13man/skivolve/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/Dhi13man/skivolve/compare/v0.1.0...v0.2.0

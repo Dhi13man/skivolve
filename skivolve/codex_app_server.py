@@ -3452,7 +3452,7 @@ class CodexAppServerProvider:
 
     @property
     def execution_policy(self) -> Any:
-        return execution_policy_for("codex")
+        return execution_policy_for("codex-app-server")
 
     @property
     def executable_sha256(self) -> str:

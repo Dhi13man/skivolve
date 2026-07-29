@@ -94,11 +94,11 @@ def _release(*, test: bool) -> dict[str, Any]:
         authority_path,
     )
     return {
-        "schema_version": 2,
+        "schema_version": 1,
         "release_id": (
-            "software-engineering-comparator-test-v2.3"
+            "software-engineering-comparator-test-v1"
             if test
-            else "software-engineering-comparator-reference-cli-v2.3"
+            else "software-engineering-comparator-reference-cli-v1"
         ),
         "test_release": test,
         "artifacts": _artifacts(),
@@ -145,9 +145,9 @@ def _release(*, test: bool) -> dict[str, Any]:
         ),
         "invocation_namespace_sha256": hashlib.sha256(
             (
-                "software-engineering-comparator-test-namespace-v2.3"
+                "software-engineering-comparator-test-namespace-v1"
                 if test
-                else "software-engineering-comparator-reference-namespace-v2.3"
+                else "software-engineering-comparator-reference-namespace-v1"
             ).encode("ascii")
         ).hexdigest(),
         "acceptance": _acceptance(),
@@ -188,10 +188,7 @@ def _release(*, test: bool) -> dict[str, Any]:
             ),
             "baseline_authority_source_sha256": file_sha256(authority_path),
             "frozen_original_commit": frozen_original,
-            "shared_harness_compatible": True,
-            "blocker": None,
         },
-        "gold_source": "scoring_gold",
         "trust_boundary_note": TRUST_NOTE,
     }
 
@@ -233,7 +230,7 @@ def main() -> None:
     profiles = [
         _authority_entry(
             ROOT,
-            "software-engineering-v2.3",
+            "software-engineering-v1",
             "production",
             production_release,
             test_release,
@@ -247,7 +244,7 @@ def main() -> None:
         ),
     ]
     authority = _encoded(
-        {"schema_version": 2, "profiles": sorted(profiles, key=lambda item: item["id"])}
+        {"schema_version": 1, "profiles": sorted(profiles, key=lambda item: item["id"])}
     )
     _write(ROOT / "release.json", production_release)
     _write(ROOT / "tests" / "test-release.json", test_release)

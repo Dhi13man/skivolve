@@ -15,7 +15,6 @@ from typing import Any
 from .comparator_calibration import calibration as _calibration
 from .comparator_profiles import (
     BUILTIN_PROFILE_IDS,
-    BUILTIN_SOFTWARE_PROFILE_ID,
     ComparatorProfileError,
     ComparatorProfileResources,
     resolve_builtin_profile,
@@ -23,7 +22,6 @@ from .comparator_profiles import (
 )
 from .provider_capabilities import (
     ProviderCapabilityError,
-    adapter_id_for_legacy_kind,
     capabilities_for,
 )
 
@@ -38,6 +36,7 @@ CODEX_REASONING_EFFORTS = {
 BILLING_BASES = frozenset({"metered_api", "chatgpt_subscription"})
 MAX_SUITE_BYTES = 16 * 1024 * 1024
 MAX_TIMEOUT_SECONDS = 60 * 60
+SUITE_SCHEMA_VERSION = 1
 
 
 class ManifestError(ValueError):
@@ -46,6 +45,7 @@ class ManifestError(ValueError):
 
 @dataclass(frozen=True)
 class ProviderConfig:
+    adapter_id: str
     kind: str
     model: str
     timeout_seconds: int
@@ -54,11 +54,6 @@ class ProviderConfig:
     reasoning_effort: str | None = None
     billing_basis: str = "metered_api"
     protocol_lock: Path | None = None
-    adapter_id: str | None = None
-
-    @property
-    def reviewed_adapter_id(self) -> str:
-        return self.adapter_id or adapter_id_for_legacy_kind(self.kind)
 
 
 @dataclass(frozen=True)
@@ -89,7 +84,6 @@ class VerifierSpec:
 @dataclass(frozen=True)
 class ArtifactContractSpec:
     kind: str
-    declared: bool
 
 
 @dataclass(frozen=True)
@@ -121,7 +115,6 @@ class SuiteSpec:
     path: Path
     root: Path
     repository_root: Path
-    schema_version: int
     suite_id: str
     seed: int
     evaluation_mode: str
@@ -132,7 +125,7 @@ class SuiteSpec:
     comparisons: tuple[ComparisonSpec, ...]
     cases: tuple[CaseSpec, ...]
     shared_verifier_dir: Path | None
-    holdout_comparison_ids: tuple[str, ...] | None
+    holdout_comparison_ids: tuple[str, ...]
     manifest_hash: str
     raw_bytes: bytes
     raw: dict[str, Any]
@@ -380,15 +373,6 @@ def _shared_verifier_directory(
     return resolved
 
 
-def _legacy_shared_verifier_directory(root: Path) -> Path | None:
-    legacy = root / "cases" / "testing" / "_shared"
-    if not legacy.exists() and not legacy.is_symlink():
-        return None
-    return _shared_verifier_directory(
-        root, "cases/testing/_shared", "legacy shared verifier directory"
-    )
-
-
 def _assert_shared_verifier_separation(
     shared_verifier_dir: Path | None,
     repository_root: Path,
@@ -532,17 +516,15 @@ def _parse_provider(
     location: str,
     suite_root: Path,
     *,
-    schema_version: int,
     role: str,
     allow_codex: bool = True,
 ) -> ProviderConfig:
-    identity_field = "adapter" if schema_version >= 6 else "kind"
     data = _object(
         raw,
         location,
-        required={identity_field, "model", "timeout_seconds"},
+        required={"adapter", "model", "timeout_seconds"},
         allowed={
-            identity_field,
+            "adapter",
             "model",
             "timeout_seconds",
             "executable",
@@ -552,18 +534,12 @@ def _parse_provider(
             "protocol_lock",
         },
     )
-    adapter_id = None
-    if schema_version >= 6:
-        adapter_id = _string(data["adapter"], f"{location}.adapter")
-        try:
-            capabilities = capabilities_for(adapter_id, role=role)
-        except ProviderCapabilityError as exc:
-            raise ManifestError(str(exc)) from exc
-        kind = capabilities.legacy_kind
-    else:
-        kind = _string(data["kind"], f"{location}.kind")
-        if kind not in {"claude", "codex", "fake"}:
-            raise ManifestError(f"{location}.kind must be 'claude', 'codex', or 'fake'")
+    adapter_id = _string(data["adapter"], f"{location}.adapter")
+    try:
+        capabilities = capabilities_for(adapter_id, role=role)
+    except ProviderCapabilityError as exc:
+        raise ManifestError(str(exc)) from exc
+    kind = capabilities.provider_kind
     if kind == "codex" and not allow_codex:
         raise ManifestError("comparator.kind must not be 'codex'")
     executable = None
@@ -635,6 +611,7 @@ def _parse_provider(
                 f"{location}.billing_basis must be 'metered_api' for {kind}"
             )
     return ProviderConfig(
+        adapter_id=adapter_id,
         kind=kind,
         executable=executable,
         model=model,
@@ -648,7 +625,6 @@ def _parse_provider(
         reasoning_effort=reasoning_effort,
         billing_basis=billing_basis,
         protocol_lock=protocol_lock,
-        adapter_id=adapter_id,
     )
 
 
@@ -776,8 +752,6 @@ def _parse_cases(
     suite_root: Path,
     *,
     require_comparator_contract: bool,
-    require_bundle_source: bool,
-    require_artifact_contract: bool,
     comparator_contract_vocabulary: dict[str, frozenset[str]] | None,
 ) -> tuple[CaseSpec, ...]:
     items = _list(raw, "cases", minimum=1)
@@ -796,17 +770,9 @@ def _parse_cases(
         "comparator_contract",
         "artifact_contract",
     }
-    required_case_fields = case_fields - {
-        "artifact_contract",
-        "comparator_contract",
-        "bundle_source",
-    }
+    required_case_fields = case_fields - {"comparator_contract"}
     if require_comparator_contract:
         required_case_fields.add("comparator_contract")
-    if require_bundle_source:
-        required_case_fields.add("bundle_source")
-    if require_artifact_contract:
-        required_case_fields.add("artifact_contract")
     allowed_case_fields = required_case_fields
     verifier_fields = {"argv", "timeout_seconds", "required_tools"}
     for index, item in enumerate(items):
@@ -878,12 +844,8 @@ def _parse_cases(
             CaseSpec(
                 id=_string(data["id"], f"{location}.id", pattern=IDENTIFIER_RE),
                 skill=skill,
-                bundle_source=(
-                    _bundle_source_path(
-                        data["bundle_source"], f"{location}.bundle_source"
-                    )
-                    if require_bundle_source
-                    else PurePosixPath("skills") / skill
+                bundle_source=_bundle_source_path(
+                    data["bundle_source"], f"{location}.bundle_source"
                 ),
                 split=split,
                 prompt_file=_suite_path(
@@ -925,12 +887,8 @@ def _parse_cases(
                     if require_comparator_contract
                     else None
                 ),
-                artifact_contract=(
-                    _parse_artifact_contract(
-                        data["artifact_contract"], f"{location}.artifact_contract"
-                    )
-                    if require_artifact_contract
-                    else ArtifactContractSpec(kind="workspace_diff", declared=False)
+                artifact_contract=_parse_artifact_contract(
+                    data["artifact_contract"], f"{location}.artifact_contract"
                 ),
             )
         )
@@ -943,7 +901,7 @@ def _parse_artifact_contract(raw: Any, location: str) -> ArtifactContractSpec:
     kind = _string(value["kind"], f"{location}.kind")
     if kind not in {"workspace_diff", "final_output_text", "final_output_json"}:
         raise ManifestError(f"{location}.kind is unsupported")
-    return ArtifactContractSpec(kind=kind, declared=True)
+    return ArtifactContractSpec(kind=kind)
 
 
 def _exact_repetitions(value: Any, location: str) -> int:
@@ -1110,9 +1068,9 @@ def load_suite(path: str | Path) -> SuiteSpec:
         raise ManifestError(f"invalid suite JSON: {exc}") from exc
     if not isinstance(data, dict):
         raise ManifestError("suite must be an object")
-    schema_version = _integer(
-        data.get("schema_version"), "schema_version", minimum=2, maximum=7
-    )
+    schema_version = _integer(data.get("schema_version"), "schema_version", minimum=0)
+    if schema_version != SUITE_SCHEMA_VERSION:
+        raise ManifestError(f"schema_version must be {SUITE_SCHEMA_VERSION}")
     common_fields = {
         "$schema",
         "schema_version",
@@ -1123,70 +1081,38 @@ def load_suite(path: str | Path) -> SuiteSpec:
         "variants",
         "comparisons",
         "cases",
+        "evaluation_mode",
+        "shared_verifier_dir",
+        "holdout",
     }
-    if schema_version == 2:
-        root_fields = common_fields | {"comparator"}
+    evaluation_mode = _string(data.get("evaluation_mode"), "evaluation_mode")
+    if evaluation_mode == "judged":
+        mode_fields = {"comparator", "comparator_profile"}
         root = _object(
             data,
             "suite",
-            required=root_fields - {"$schema"},
-            allowed=root_fields,
+            required=(common_fields | mode_fields) - {"$schema"},
+            allowed=common_fields | mode_fields,
         )
-        evaluation_mode = "judged"
-        comparator_profile = ComparatorProfileSpec(
-            kind="builtin",
-            id=BUILTIN_SOFTWARE_PROFILE_ID,
-            root=None,
-            resources=None,
+        comparator_profile = _parse_comparator_profile(
+            root["comparator_profile"], manifest_path.parent
         )
+    elif evaluation_mode == "objective_only":
+        root = _object(
+            data,
+            "suite",
+            required=common_fields - {"$schema"},
+            allowed=common_fields,
+        )
+        comparator_profile = None
     else:
-        root_fields = common_fields | {
-            "evaluation_mode",
-            "comparator",
-            "comparator_profile",
-        }
-        if schema_version >= 4:
-            root_fields.add("shared_verifier_dir")
-        if schema_version >= 5:
-            root_fields.add("holdout")
-        if not isinstance(data.get("evaluation_mode"), str):
-            raise ManifestError("evaluation_mode must be a string")
-        evaluation_mode = data["evaluation_mode"]
-        if evaluation_mode == "judged":
-            required = common_fields | {
-                "evaluation_mode",
-                "comparator",
-                "comparator_profile",
-            }
-        elif evaluation_mode == "objective_only":
-            required = common_fields | {"evaluation_mode"}
-            root_fields = required
-        else:
-            raise ManifestError("evaluation_mode must be 'judged' or 'objective_only'")
-        if schema_version >= 4:
-            required.add("shared_verifier_dir")
-            root_fields.add("shared_verifier_dir")
-        if schema_version >= 5:
-            required.add("holdout")
-            root_fields.add("holdout")
-        root = _object(
-            data,
-            "suite",
-            required=required - {"$schema"},
-            allowed=root_fields,
-        )
-        comparator_profile = (
-            _parse_comparator_profile(root["comparator_profile"], manifest_path.parent)
-            if evaluation_mode == "judged"
-            else None
-        )
+        raise ManifestError("evaluation_mode must be 'judged' or 'objective_only'")
     suite_root = manifest_path.parent
     repository_root = _root_path(suite_root, root["repository_root"], "repository_root")
     provider = _parse_provider(
         root["provider"],
         "provider",
         suite_root,
-        schema_version=schema_version,
         role="generation",
     )
     comparator = (
@@ -1194,7 +1120,6 @@ def load_suite(path: str | Path) -> SuiteSpec:
             root["comparator"],
             "comparator",
             suite_root,
-            schema_version=schema_version,
             role="comparison",
             allow_codex=False,
         )
@@ -1207,35 +1132,25 @@ def load_suite(path: str | Path) -> SuiteSpec:
     comparisons = _parse_comparisons(
         root["comparisons"], {variant.id for variant in variants}
     )
-    holdout_comparison_ids = (
-        _parse_holdout_comparison_ids(root["holdout"], comparisons)
-        if schema_version >= 5
-        else None
-    )
+    holdout_comparison_ids = _parse_holdout_comparison_ids(root["holdout"], comparisons)
     cases = _parse_cases(
         root["cases"],
         suite_root,
         require_comparator_contract=evaluation_mode == "judged",
-        require_bundle_source=schema_version >= 4,
-        require_artifact_contract=schema_version >= 7,
         comparator_contract_vocabulary=_comparator_contract_vocabulary(
             comparator_profile
         ),
     )
-    shared_verifier_dir = (
-        _shared_verifier_directory(suite_root, root["shared_verifier_dir"])
-        if schema_version >= 4
-        else _legacy_shared_verifier_directory(suite_root)
+    shared_verifier_dir = _shared_verifier_directory(
+        suite_root, root["shared_verifier_dir"]
     )
-    if schema_version >= 4:
-        _assert_shared_verifier_separation(
-            shared_verifier_dir, repository_root, variants, cases
-        )
+    _assert_shared_verifier_separation(
+        shared_verifier_dir, repository_root, variants, cases
+    )
     return SuiteSpec(
         path=manifest_path,
         root=suite_root,
         repository_root=repository_root,
-        schema_version=schema_version,
         suite_id=_string(root["suite_id"], "suite_id", pattern=IDENTIFIER_RE),
         seed=_integer(root["seed"], "seed", minimum=0),
         evaluation_mode=evaluation_mode,

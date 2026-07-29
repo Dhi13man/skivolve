@@ -12,6 +12,7 @@ import sys
 import tempfile
 import threading
 import unittest
+from collections.abc import Callable
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
@@ -57,7 +58,6 @@ from skivolve.runner import (  # noqa: E402
     _generator_request_sha256,
     _release_case_fingerprint,
     _release_context_content_hashes,
-    _snapshot_tree,
     _serialized_arm_order,
     _tree_hash,
 )
@@ -69,6 +69,54 @@ from skivolve.cli import build_parser, main as run_evals_main  # noqa: E402
 
 
 _REAL_BARRIER = threading.Barrier
+
+
+def _production_runner(
+    runner: EvalRunner,
+    add_cleanup: Callable[..., object],
+    *,
+    bypass_generator_authority: bool = True,
+    bypass_comparator_authority: bool = True,
+) -> EvalRunner:
+    runtime = runner._load_comparator_runtime()
+    release = copy.deepcopy(runtime.bundle.release)
+    release["test_release"] = False
+    certification = replace(
+        runtime.certification,
+        valid=True,
+        evidence_path=runner.suite.root / "live-evidence.json",
+        evidence_sha256="c" * 64,
+        result_sha256="d" * 64,
+        actual_models=("fake-sonnet-v2.0",),
+        executable_sha256="e" * 64,
+        error=None,
+    )
+    runner._comparator_runtime = replace(
+        runtime,
+        bundle=replace(runtime.bundle, release=release),
+        release_summary={
+            **runtime.release_summary,
+            "release_sha256": canonical_sha256(release),
+        },
+        certification=certification,
+    )
+    if bypass_generator_authority:
+        patcher = patch.object(
+            runner,
+            "_assert_generator_release_authority",
+            return_value=None,
+        )
+        patcher.start()
+        add_cleanup(patcher.stop)
+    if bypass_comparator_authority:
+        patcher = patch.object(
+            runner,
+            "_production_comparator_release_authoritative",
+            return_value=True,
+        )
+        patcher.start()
+        add_cleanup(patcher.stop)
+    return runner
 
 
 class _SerializedCodexTestProvider(FakeProvider):
@@ -440,21 +488,27 @@ class SuiteFixture:
     def _manifest(self) -> dict[str, object]:
         return {
             "$schema": "../suite.schema.json",
-            "schema_version": 2,
+            "schema_version": 1,
             "suite_id": "unit-suite",
             "seed": 7123,
             "repository_root": "..",
+            "evaluation_mode": "judged",
             "provider": {
-                "kind": "fake",
+                "adapter": "deterministic-fake",
                 "model": "fake-model-v1",
                 "timeout_seconds": 10,
             },
             "comparator": {
-                "kind": "fake",
+                "adapter": "deterministic-fake",
                 "model": "fake-sonnet-v2",
                 "timeout_seconds": 300,
                 "max_budget_usd": 1.0,
             },
+            "comparator_profile": {
+                "kind": "builtin",
+                "id": "software-engineering-v1",
+            },
+            "shared_verifier_dir": None,
             "variants": [
                 {"id": "without", "kind": "without_skill"},
                 {"id": "old", "kind": "git_ref", "git_ref": self.baseline_commit},
@@ -486,10 +540,14 @@ class SuiteFixture:
                     "comparator_order": "ab_ba",
                 },
             ],
+            "holdout": {
+                "comparison_ids": ["without-current", "old-current"],
+            },
             "cases": [
                 {
                     "id": "basic",
                     "skill": "demo",
+                    "bundle_source": "skills/demo",
                     "split": "train",
                     "prompt_file": "prompt.md",
                     "fixture_dir": "fixture",
@@ -512,6 +570,7 @@ class SuiteFixture:
                         "performance_basis": None,
                         "qualitative_bases": {},
                     },
+                    "artifact_contract": {"kind": "workspace_diff"},
                 }
             ],
         }
@@ -521,112 +580,61 @@ class SuiteFixture:
             json.dumps(self.manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8"
         )
 
-    def use_v3_judged(self, profile: dict[str, str] | None = None) -> None:
-        self.manifest["schema_version"] = 3
+    def use_judged(
+        self,
+        *,
+        profile: dict[str, str] | None = None,
+        comparison_ids: tuple[str, ...] = ("without-current", "old-current"),
+        bundle_source: str = "skills/demo",
+        artifact_kind: str = "workspace_diff",
+    ) -> None:
+        self.manifest["schema_version"] = 1
         self.manifest["evaluation_mode"] = "judged"
         self.manifest["comparator_profile"] = profile or {
             "kind": "builtin",
-            "id": "software-engineering-v2.3",
+            "id": "software-engineering-v1",
         }
+        self.manifest["comparator"] = {
+            "adapter": "deterministic-fake",
+            "model": "fake-sonnet-v2",
+            "timeout_seconds": 300,
+            "max_budget_usd": 1.0,
+        }
+        self.manifest["shared_verifier_dir"] = None
+        self.manifest["holdout"] = {"comparison_ids": list(comparison_ids)}
+        for case in self.manifest["cases"]:
+            case["bundle_source"] = bundle_source
+            case["artifact_contract"] = {"kind": artifact_kind}
+            case["comparator_contract"] = {
+                "requirements": [
+                    {
+                        "id": "answer-present",
+                        "kind": "required_behavior",
+                        "text": "The implementation must create a non-empty answer file in the fixture workspace.",
+                    }
+                ],
+                "performance_basis": None,
+                "qualitative_bases": {},
+            }
         self.save_manifest()
 
-    def use_v3_objective(self) -> None:
-        self.manifest["schema_version"] = 3
+    def use_objective(
+        self,
+        *,
+        comparison_ids: tuple[str, ...] = ("without-current", "old-current"),
+        bundle_source: str = "skills/demo",
+        artifact_kind: str = "workspace_diff",
+    ) -> None:
+        self.manifest["schema_version"] = 1
         self.manifest["evaluation_mode"] = "objective_only"
         self.manifest.pop("comparator", None)
         self.manifest.pop("comparator_profile", None)
+        self.manifest["shared_verifier_dir"] = None
+        self.manifest["holdout"] = {"comparison_ids": list(comparison_ids)}
         for case in self.manifest["cases"]:
+            case["bundle_source"] = bundle_source
+            case["artifact_contract"] = {"kind": artifact_kind}
             case.pop("comparator_contract", None)
-        self.save_manifest()
-
-    def use_v4_judged(self, bundle_source: str = "skills/demo") -> None:
-        self.use_v3_judged()
-        self.manifest["schema_version"] = 4
-        self.manifest["shared_verifier_dir"] = None
-        for case in self.manifest["cases"]:
-            case["bundle_source"] = bundle_source
-        self.save_manifest()
-
-    def use_v4_objective(self, bundle_source: str = "skills/demo") -> None:
-        self.use_v3_objective()
-        self.manifest["schema_version"] = 4
-        self.manifest["shared_verifier_dir"] = None
-        for case in self.manifest["cases"]:
-            case["bundle_source"] = bundle_source
-        self.save_manifest()
-
-    def use_v5_judged(
-        self,
-        comparison_ids: tuple[str, ...] = ("without-current", "old-current"),
-        bundle_source: str = "skills/demo",
-    ) -> None:
-        self.use_v4_judged(bundle_source)
-        self.manifest["schema_version"] = 5
-        self.manifest["holdout"] = {"comparison_ids": list(comparison_ids)}
-        self.save_manifest()
-
-    def use_v5_objective(
-        self,
-        comparison_ids: tuple[str, ...] = ("without-current", "old-current"),
-        bundle_source: str = "skills/demo",
-    ) -> None:
-        self.use_v4_objective(bundle_source)
-        self.manifest["schema_version"] = 5
-        self.manifest["holdout"] = {"comparison_ids": list(comparison_ids)}
-        self.save_manifest()
-
-    @staticmethod
-    def _use_adapter(config: dict[str, object]) -> None:
-        adapter_ids = {
-            "claude": "claude-cli",
-            "codex": "codex-app-server",
-            "fake": "deterministic-fake",
-        }
-        config["adapter"] = adapter_ids[config.pop("kind")]
-
-    def use_v6_judged(
-        self,
-        comparison_ids: tuple[str, ...] = ("without-current", "old-current"),
-        bundle_source: str = "skills/demo",
-    ) -> None:
-        self.use_v5_judged(comparison_ids, bundle_source)
-        self.manifest["schema_version"] = 6
-        self._use_adapter(self.manifest["provider"])
-        self._use_adapter(self.manifest["comparator"])
-        self.save_manifest()
-
-    def use_v6_objective(
-        self,
-        comparison_ids: tuple[str, ...] = ("without-current", "old-current"),
-        bundle_source: str = "skills/demo",
-    ) -> None:
-        self.use_v5_objective(comparison_ids, bundle_source)
-        self.manifest["schema_version"] = 6
-        self._use_adapter(self.manifest["provider"])
-        self.save_manifest()
-
-    def use_v7_objective(
-        self,
-        artifact_kind: str,
-        comparison_ids: tuple[str, ...] = ("without-current", "old-current"),
-        bundle_source: str = "skills/demo",
-    ) -> None:
-        self.use_v6_objective(comparison_ids, bundle_source)
-        self.manifest["schema_version"] = 7
-        for case in self.manifest["cases"]:
-            case["artifact_contract"] = {"kind": artifact_kind}
-        self.save_manifest()
-
-    def use_v7_judged(
-        self,
-        artifact_kind: str,
-        comparison_ids: tuple[str, ...] = ("without-current", "old-current"),
-        bundle_source: str = "skills/demo",
-    ) -> None:
-        self.use_v6_judged(comparison_ids, bundle_source)
-        self.manifest["schema_version"] = 7
-        for case in self.manifest["cases"]:
-            case["artifact_contract"] = {"kind": artifact_kind}
         self.save_manifest()
 
     def isolate_basic_case(self) -> None:
@@ -650,7 +658,7 @@ class SuiteFixture:
         self,
         relative: str,
         *,
-        profile_id: str = "suite-local-software-v2.3",
+        profile_id: str = "suite-local-software-v1",
         source_directory: str = "comparator_calibration",
     ) -> Path:
         destination = self.suite_root / relative
@@ -696,6 +704,7 @@ class SuiteFixture:
             suite,
             provider=replace(
                 suite.provider,
+                adapter_id="codex-app-server",
                 kind="codex",
                 executable=str(self.fake_codex),
                 model="gpt-5.6-luna",
@@ -743,6 +752,12 @@ class SuiteFixture:
                 "comparator_order": "ab_ba",
             },
         ]
+        self.manifest["holdout"] = {
+            "comparison_ids": [
+                "candidate-vs-original",
+                "candidate-vs-no-skill",
+            ]
+        }
         base_case = self.manifest["cases"][0]
         cases = []
         for skill in skills:
@@ -772,81 +787,41 @@ class SuiteFixture:
         self.manifest["cases"] = cases
         self.save_manifest()
 
-    def holdout_plan_payload(self) -> dict[str, object]:
+    def holdout_plan_payload(self, runner: EvalRunner) -> dict[str, object]:
         suite = load_suite(self.manifest_path)
-        test_release = json.loads(
-            (
-                self.suite_root
-                / "skivolve/comparator_calibration/tests/test-release.json"
-            ).read_text(encoding="utf-8")
+        comparison_ids = suite.holdout_comparison_ids
+        draft = runner._preflight(
+            RunSelection(split="holdout", comparison_ids=comparison_ids),
+            allow_unsealed_holdout=True,
         )
-        case_bindings = []
-        shared_root = suite.shared_verifier_dir
-        shared_snapshot = (
-            _snapshot_tree(shared_root, ignore_generated_caches=True)
-            if shared_root is not None
-            else None
-        )
-        for case in suite.cases:
-            snapshot = _snapshot_tree(
-                case.prompt_file.parent, ignore_generated_caches=True
-            )
-            prompt_sha256 = hashlib.sha256(
-                case.prompt_file.read_text(encoding="utf-8").encode("utf-8")
-            ).hexdigest()
-            fixture_sha256 = _tree_hash(case.fixture_dir, ignore_generated_caches=True)
-            context_content_sha256s = _release_context_content_hashes(
-                suite.repository_root,
-                case,
-                {
-                    "candidate": self.treatment_commit,
-                    "original": self.baseline_commit,
-                },
-            )
-            case_bindings.append(
-                {
-                    "id": case.id,
-                    "case_tree_sha256": snapshot.sha256,
-                    "shared_tree_sha256": (
-                        shared_snapshot.sha256 if shared_snapshot is not None else None
-                    ),
-                    "release_case_fingerprint": _release_case_fingerprint(
-                        case,
-                        prompt_sha256=prompt_sha256,
-                        fixture_sha256=fixture_sha256,
-                        context_content_sha256s=context_content_sha256s,
-                    ),
-                    "skill": case.skill,
-                    "critical_expectations": list(case.critical_expectations),
-                }
-            )
-        return {
-            "schema_version": 2,
+        payload = {
+            "schema_version": 1,
             "plan_id": "unit-holdout-v1",
             "status": "sealed",
             "manifest_sha256": suite.manifest_hash,
-            "comparator_release_sha256": canonical_sha256(test_release),
-            "comparator_calibration_evidence_sha256": None,
-            "generator_provider": {
-                "name": "deterministic-fake",
-                "version": "1",
-                "requested_model": suite.provider.model,
-                "executable_sha256": None,
-                "reasoning_effort": None,
-                "billing_basis": "metered_api",
-                "protocol_lock": None,
-                "protocol_lock_sha256": None,
-                "execution_policy": {
-                    "concurrency": "concurrent",
-                    "release_authoritative": True,
-                },
-            },
-            "candidate_commit": self.treatment_commit,
-            "original_commit": self.baseline_commit,
+            "evaluation_mode": suite.evaluation_mode,
+            "generator_provider": draft["provider"],
+            "generator_adapter_binding": runner._agent_authority_binding,
+            "source_bindings": [
+                {
+                    "variant_id": variant_id,
+                    "kind": draft["sources"][variant_id]["kind"],
+                    "source_commit": draft["sources"][variant_id]["source_commit"],
+                    "source_sha256_by_case": {
+                        case_id: digest
+                        for case_id, digest in sorted(
+                            draft["sources"][variant_id][
+                                "source_sha256_by_case"
+                            ].items()
+                        )
+                    },
+                }
+                for variant_id in sorted(draft["sources"])
+            ],
             "consumption_record_path": str(
                 (self.root / "holdout-plan.json.consumption.json").resolve()
             ),
-            "seed": suite.seed,
+            "seed": draft["selection"]["seed"],
             "comparison_profile": [
                 {
                     "id": comparison.id,
@@ -856,10 +831,21 @@ class SuiteFixture:
                     "comparator_order": comparison.comparator_order,
                 }
                 for comparison in suite.comparisons
+                if comparison.id in comparison_ids
             ],
-            "cases": case_bindings,
+            "cases": [
+                {
+                    "id": case["id"],
+                    "case_tree_sha256": case["case_tree_sha256"],
+                    "shared_tree_sha256": case["shared_tree_sha256"],
+                    "release_case_fingerprint": case["release_case_fingerprint"],
+                    "skill": case["skill"],
+                    "critical_expectations": case["critical_expectations"],
+                }
+                for case in draft["cases"]
+            ],
             "provenance": {
-                "assurance": "trusted-reviewed-attestation",
+                "assurance": "operator-declared-review-records",
                 "privacy_claim": "not-a-cryptographic-privacy-proof",
                 "frozen_before_candidate_evaluation": True,
                 "sealed_after_independent_review": True,
@@ -868,17 +854,45 @@ class SuiteFixture:
                 "seal_record": "review-record:seal:unit-holdout-v1",
             },
         }
+        if suite.evaluation_mode == "judged":
+            comparator_evidence = draft["comparator"]
+            if comparator_evidence is None:
+                raise AssertionError("judged preflight omitted comparator evidence")
+            payload.update(
+                {
+                    "comparator_release_sha256": comparator_evidence["release_sha256"],
+                    "comparator_calibration_evidence_sha256": comparator_evidence[
+                        "calibration_evidence_sha256"
+                    ],
+                    "comparator_profile_id": comparator_evidence["profile_id"],
+                    "comparator_profile_descriptor_sha256": comparator_evidence[
+                        "profile_descriptor_sha256"
+                    ],
+                    "comparator_profile_authority_registry_sha256": (
+                        comparator_evidence["profile_authority_registry_sha256"]
+                    ),
+                    "comparator_adapter_binding": runner._comparator_authority_binding,
+                }
+            )
+        else:
+            objective = draft["objective_acceptance"]
+            payload.update(
+                {
+                    "objective_acceptance_policy_id": objective["policy_id"],
+                    "objective_acceptance_policy_sha256": objective["policy_sha256"],
+                }
+            )
+        return payload
 
     def save_holdout_plan(
         self,
-        payload: dict[str, object] | None = None,
+        payload: dict[str, object],
         *,
         name: str = "holdout-plan.json",
     ) -> Path:
         plan_path = self.root / name
         plan_path.write_text(
-            json.dumps(payload or self.holdout_plan_payload(), indent=2, sort_keys=True)
-            + "\n",
+            json.dumps(payload, indent=2, sort_keys=True) + "\n",
             encoding="utf-8",
         )
         plan_path.chmod(0o600)
@@ -1453,13 +1467,25 @@ class RunnerIntegrationTests(unittest.TestCase):
                     )
                 self.assertEqual(provider.agent_requests, [])
 
-    def test_provider_factory_lazily_builds_codex_app_server(self) -> None:
-        config = replace(self.load().provider, kind="codex")
+    def test_build_provider_when_adapter_is_codex_lazily_imports_app_server(
+        self,
+    ) -> None:
+        # Arrange
+        config = replace(
+            self.load().provider,
+            adapter_id="codex-app-server",
+            kind="codex",
+        )
         sentinel = object()
         constructor = Mock(return_value=sentinel)
         module = SimpleNamespace(CodexAppServerProvider=constructor)
+
+        # Act
         with patch.dict(sys.modules, {"skivolve.codex_app_server": module}):
-            self.assertIs(_build_provider(config), sentinel)
+            provider = _build_provider(config)
+
+        # Assert
+        self.assertIs(provider, sentinel)
         constructor.assert_called_once_with(config)
 
     def test_runner_closes_only_owned_providers_once_and_rejects_reuse(self) -> None:
@@ -1803,9 +1829,10 @@ class RunnerIntegrationTests(unittest.TestCase):
                 self.fixture.provider(),
             )
 
-    def test_dry_run_validates_everything_without_agents_verifier_or_writes(
+    def test_run_when_dry_run_is_requested_validates_without_dispatch_or_writes(
         self,
     ) -> None:
+        # Arrange
         def forbidden_agent(_request):
             raise AssertionError("dry-run invoked agent")
 
@@ -1816,17 +1843,20 @@ class RunnerIntegrationTests(unittest.TestCase):
             agent_handler=forbidden_agent, comparator_handler=forbidden_comparator
         )
         output = self.output("must-not-exist")
+
+        # Act
         result = self.runner(provider).run(
             RunSelection(comparison_ids=("without-current",)),
             output_dir=output,
             dry_run=True,
         )
 
+        # Assert
         self.assertTrue(result["dry_run"])
         self.assertEqual(result["planned_pair_runs"], 3)
         self.assertTrue(result["protocol_locks_valid"])
         self.assertFalse(result["live_calibration_valid"])
-        self.assertNotIn("profile_locks_valid", result)
+        self.assertTrue(result["profile_locks_valid"])
         self.assertNotIn("objective_acceptance", result["preflight"])
         self.assertEqual(
             set(result["preflight"]["comparator"]),
@@ -1839,6 +1869,11 @@ class RunnerIntegrationTests(unittest.TestCase):
                 "protocol_locks_valid",
                 "live_calibration_valid",
                 "certification",
+                "profile_kind",
+                "profile_id",
+                "profile_descriptor_sha256",
+                "profile_authority_registry_sha256",
+                "profile_locks_valid",
             },
         )
         self.assertFalse(output.exists())
@@ -2216,7 +2251,10 @@ print(json.dumps({"passed": False, "assertions": [{"id": "answer-present", "pass
             pair["arms"]["treatment"]["source"]["skill_snapshot_sha256"],
         )
 
-    def test_configured_bundle_source_has_git_and_worktree_parity(self) -> None:
+    def test_materialize_bundle_when_source_is_git_or_worktree_produces_parity(
+        self,
+    ) -> None:
+        # Arrange
         self.fixture._write(
             "instruction-bundles/demo/SKILL.md",
             "# Configured Bundle\n\nConfigured guidance.\n",
@@ -2230,7 +2268,7 @@ print(json.dumps({"passed": False, "assertions": [{"id": "answer-present", "pass
         bundle_commit = self.fixture._git("rev-parse", "HEAD").strip()
         self.fixture.manifest["variants"][1]["git_ref"] = bundle_commit
         self.fixture.manifest["variants"][2]["source_ref"] = bundle_commit
-        self.fixture.use_v4_objective("instruction-bundles/demo")
+        self.fixture.use_objective(bundle_source="instruction-bundles/demo")
 
         observations: dict[str, tuple[str, str]] = {}
 
@@ -2248,11 +2286,14 @@ print(json.dumps({"passed": False, "assertions": [{"id": "answer-present", "pass
 
         provider = self.fixture.provider()
         provider._agent_handler = agent
+
+        # Act
         result = EvalRunner(self.load(), provider).run(
             RunSelection(comparison_ids=("old-current",)),
             output_dir=self.output("configured-bundle"),
         )
 
+        # Assert
         self.assertEqual(observations["old"], observations["current"])
         self.assertIn("Configured guidance", observations["old"][0])
         self.assertIn("Configured route", observations["old"][1])
@@ -2268,7 +2309,10 @@ print(json.dumps({"passed": False, "assertions": [{"id": "answer-present", "pass
             pair["arms"]["treatment"]["source"]["skill_snapshot_sha256"],
         )
 
-    def test_literal_git_pathspec_bundle_has_parity_and_dirty_detection(self) -> None:
+    def test_materialize_bundle_when_source_is_literal_pathspec_preserves_parity_and_detects_dirty_state(
+        self,
+    ) -> None:
+        # Arrange
         bundle_source = ":(literal)demo"
         self.fixture._write(f"{bundle_source}/SKILL.md", "# Literal Pathspec Bundle\n")
         self.fixture._git("--literal-pathspecs", "add", "--", bundle_source)
@@ -2276,7 +2320,7 @@ print(json.dumps({"passed": False, "assertions": [{"id": "answer-present", "pass
         bundle_commit = self.fixture._git("rev-parse", "HEAD").strip()
         self.fixture.manifest["variants"][1]["git_ref"] = bundle_commit
         self.fixture.manifest["variants"][2]["source_ref"] = bundle_commit
-        self.fixture.use_v4_objective(bundle_source)
+        self.fixture.use_objective(bundle_source=bundle_source)
 
         observed: dict[str, str] = {}
 
@@ -2291,10 +2335,13 @@ print(json.dumps({"passed": False, "assertions": [{"id": "answer-present", "pass
 
         provider = self.fixture.provider()
         provider._agent_handler = agent
+
+        # Act
         result = EvalRunner(self.load(), provider).run(
             RunSelection(comparison_ids=("old-current",)),
             output_dir=self.output("literal-pathspec-bundle"),
         )
+        # Assert
         pair = result["pairs"][0]
         self.assertEqual(observed["old"], observed["current"])
         self.assertEqual(
@@ -2302,16 +2349,21 @@ print(json.dumps({"passed": False, "assertions": [{"id": "answer-present", "pass
             pair["arms"]["treatment"]["source"]["skill_snapshot_sha256"],
         )
 
+        # Arrange
         self.fixture._write(
             f"{bundle_source}/SKILL.md",
             "# Literal Pathspec Bundle\n\nUncommitted.\n",
         )
+        # Act + Assert
         with self.assertRaisesRegex(RunnerError, "commit it before A/B evaluation"):
             EvalRunner(self.load(), self.fixture.provider()).preflight(
                 RunSelection(comparison_ids=("without-current",))
             )
 
-    def test_tracked_generated_caches_have_git_and_worktree_parity(self) -> None:
+    def test_materialize_bundle_when_tracked_caches_exist_preserves_source_parity(
+        self,
+    ) -> None:
+        # Arrange
         self.fixture._write(
             "instruction-bundles/demo/SKILL.md", "# Cache-Aware Bundle\n"
         )
@@ -2326,7 +2378,7 @@ print(json.dumps({"passed": False, "assertions": [{"id": "answer-present", "pass
         bundle_commit = self.fixture._git("rev-parse", "HEAD").strip()
         self.fixture.manifest["variants"][1]["git_ref"] = bundle_commit
         self.fixture.manifest["variants"][2]["source_ref"] = bundle_commit
-        self.fixture.use_v4_objective("instruction-bundles/demo")
+        self.fixture.use_objective(bundle_source="instruction-bundles/demo")
         observed: dict[str, list[str]] = {}
 
         def agent(request):
@@ -2341,11 +2393,14 @@ print(json.dumps({"passed": False, "assertions": [{"id": "answer-present", "pass
 
         provider = self.fixture.provider()
         provider._agent_handler = agent
+
+        # Act
         result = EvalRunner(self.load(), provider).run(
             RunSelection(comparison_ids=("old-current",)),
             output_dir=self.output("tracked-cache-bundle"),
         )
 
+        # Assert
         pair = result["pairs"][0]
         self.assertEqual(
             pair["arms"]["control"]["source"]["skill_snapshot_sha256"],
@@ -2360,58 +2415,28 @@ print(json.dumps({"passed": False, "assertions": [{"id": "answer-present", "pass
             )
         )
 
-    def test_legacy_git_ref_preserves_tracked_cache_snapshot_bytes(self) -> None:
-        cache = self.fixture.repository / "skills/demo/__pycache__"
-        cache.mkdir(parents=True)
-        cache.joinpath("legacy.pyc").write_bytes(b"legacy tracked cache")
-        self.fixture._git("add", "skills/demo/__pycache__/legacy.pyc")
-        self.fixture._git("commit", "-q", "-m", "legacy tracked cache")
-        cache_commit = self.fixture._git("rev-parse", "HEAD").strip()
-
-        version_two = self.load()
-        version_two_fingerprint = runner_module._git_source_fingerprint(
-            self.fixture.repository, cache_commit, version_two.cases[0]
-        )
-        snapshot = self.output("legacy-cache-snapshot")
-        runner_module._materialize_git_bundle(
-            self.fixture.repository,
-            cache_commit,
-            version_two.cases[0].bundle_source,
-            snapshot,
-        )
-        self.assertEqual(
-            (snapshot / "__pycache__/legacy.pyc").read_bytes(),
-            b"legacy tracked cache",
-        )
-
-        self.fixture.use_v3_judged()
-        version_three = self.load()
-        version_three_fingerprint = runner_module._git_source_fingerprint(
-            self.fixture.repository, cache_commit, version_three.cases[0]
-        )
-        self.assertEqual(version_three_fingerprint, version_two_fingerprint)
-        self.assertEqual(
-            version_two_fingerprint,
-            "bb56f030d871f9cb5af42d1fae523140be90136caba30c335736f9401852e72c",
-        )
-
-    def test_v5_source_fingerprint_binds_locator_paths_bytes_and_modes(self) -> None:
-        self.fixture.use_v5_judged()
+    def test_source_fingerprint_when_inputs_differ_binds_paths_bytes_and_modes(
+        self,
+    ) -> None:
+        # Arrange
+        self.fixture.use_judged()
         suite = self.load()
         case = suite.cases[0]
+
+        # Act
         git_hash = runner_module._git_source_fingerprint(
             self.fixture.repository,
             self.fixture.treatment_commit,
             case,
             ignore_generated_caches=True,
-            canonical=True,
         )
         worktree_hash = runner_module._worktree_source_fingerprint(
             self.fixture.repository,
             case,
             ignore_empty_directories=True,
-            canonical=True,
         )
+
+        # Assert
         self.assertEqual(git_hash, worktree_hash)
 
         alternate_bundle = self.fixture.repository / "skills/demo-copy"
@@ -2423,7 +2448,6 @@ print(json.dumps({"passed": False, "assertions": [{"id": "answer-present", "pass
             self.fixture.repository,
             locator_case,
             ignore_empty_directories=True,
-            canonical=True,
         )
         self.assertNotEqual(locator_hash, worktree_hash)
 
@@ -2434,7 +2458,6 @@ print(json.dumps({"passed": False, "assertions": [{"id": "answer-present", "pass
                 self.fixture.repository,
                 case,
                 ignore_empty_directories=True,
-                canonical=True,
             )
         finally:
             entrypoint.chmod(0o644)
@@ -2450,7 +2473,6 @@ print(json.dumps({"passed": False, "assertions": [{"id": "answer-present", "pass
             self.fixture.repository,
             context_case,
             ignore_empty_directories=True,
-            canonical=True,
         )
         self.assertNotEqual(context_path_hash, worktree_hash)
 
@@ -2459,7 +2481,6 @@ print(json.dumps({"passed": False, "assertions": [{"id": "answer-present", "pass
             self.fixture.repository,
             context_case,
             ignore_empty_directories=True,
-            canonical=True,
         )
         self.assertNotEqual(context_bytes_hash, context_path_hash)
 
@@ -2487,11 +2508,19 @@ print(json.dumps({"passed": False, "assertions": [{"id": "answer-present", "pass
         self.assertFalse(first["aggregate"]["gates"]["order_integrity"]["passed"])
         self.assertFalse(first["passed"])
 
-    def test_aggregate_uses_distinct_case_sign_test_not_repetitions(self) -> None:
+    def test_aggregate_when_repetitions_repeat_cases_uses_distinct_case_sign_test(
+        self,
+    ) -> None:
+        # Arrange
         suite = self.load()
         cases = tuple(replace(suite.cases[0], id=f"case-{index}") for index in range(5))
         comparison = replace(suite.comparisons[0], id="candidate-vs-original")
-        gated_suite = replace(suite, cases=cases, comparisons=(comparison,))
+        gated_suite = replace(
+            suite,
+            cases=cases,
+            comparisons=(comparison,),
+            holdout_comparison_ids=(comparison.id,),
+        )
         provider = {
             "actual_models": ("fake-model-v1",),
             "cost_usd": 0.0,
@@ -2522,12 +2551,15 @@ print(json.dumps({"passed": False, "assertions": [{"id": "answer-present", "pass
                     }
                 )
 
+        # Act
         aggregate = _aggregate(
             pairs,  # type: ignore[arg-type]
             gated_suite,
             (comparison,),
             RunSelection(comparison_ids=(comparison.id,)),
         )
+
+        # Assert
         cell = aggregate["by_comparison_skill"][comparison.id]["demo"]
         self.assertEqual(cell["distinct_cases"], 5)
         self.assertEqual(cell["informative_cases"], 5)
@@ -2715,12 +2747,15 @@ print(json.dumps({"passed": False, "assertions": [{"id": "answer-present", "pass
         )
         self.assertFalse(incomplete_smoke["passed"])
 
-    def test_verifier_only_aggregate_cannot_authorize_release(self) -> None:
+    def test_aggregate_when_run_is_verifier_only_cannot_authorize_release(self) -> None:
+        # Arrange
         self.fixture.configure_holdout()
         suite = self.load()
         comparisons = suite.comparisons
         cases = suite.cases
-        plan_path = self.fixture.save_holdout_plan()
+        with _production_runner(self.runner(), self.addCleanup) as plan_runner:
+            plan_payload = self.fixture.holdout_plan_payload(plan_runner)
+        plan_path = self.fixture.save_holdout_plan(plan_payload)
         holdout_plan = load_holdout_plan(plan_path)
         provider = {
             "actual_models": ["stable-model"],
@@ -2750,6 +2785,7 @@ print(json.dumps({"passed": False, "assertions": [{"id": "answer-present", "pass
                         }
                     )
 
+        # Act
         judged = _aggregate(
             pairs,  # type: ignore[arg-type]
             suite,
@@ -2791,6 +2827,7 @@ print(json.dumps({"passed": False, "assertions": [{"id": "answer-present", "pass
             generator_release_authoritative=False,
         )
 
+        # Assert
         self.assertTrue(judged["final_release_authorized"])
         self.assertEqual(judged["passed"], judged["final_release_authorized"])
         self.assertEqual(verifier_only["execution_mode"], "verifier_only")
@@ -2866,9 +2903,10 @@ print(json.dumps({"passed": True, "assertions": [
             self.assertTrue(arm["verifier"]["workspace_mutated"])
             self.assertNotIn("verifier-created.txt", arm["diff"])
 
-    def test_final_text_artifact_and_pristine_workspace_are_read_only(self) -> None:
-        self.fixture.use_v6_objective()
-        self.fixture.manifest["schema_version"] = 7
+    def test_run_when_artifact_is_final_text_keeps_workspace_read_only(self) -> None:
+        # Arrange
+        self.fixture.use_objective()
+        self.fixture.manifest["schema_version"] = 1
         self.fixture.manifest["cases"][0]["artifact_contract"] = {
             "kind": "final_output_text"
         }
@@ -2925,11 +2963,14 @@ print(json.dumps({
             return "line 1\r\nline 2\r"
 
         provider = FakeProvider(agent_handler=mutate_workspace)
+
+        # Act
         result = EvalRunner(self.load(), provider).run(
             RunSelection(comparison_ids=("without-current",)),
             output_dir=self.output("final-text-artifact"),
         )
 
+        # Assert
         self.assertTrue(result["passed"], result)
         for arm in result["pairs"][0]["arms"].values():
             self.assertEqual(arm["status"], "completed")
@@ -2946,19 +2987,22 @@ print(json.dumps({
                 )
             )
 
-    def test_malformed_declared_output_stops_before_verifier_and_comparator(
+    def test_run_when_declared_output_is_malformed_stops_before_verifier_and_comparator(
         self,
     ) -> None:
-        self.fixture.use_v7_objective("final_output_json")
+        # Arrange
+        self.fixture.use_objective(artifact_kind="final_output_json")
         provider = FakeProvider(agent_handler=lambda _request: '{"a":1,"a":2}')
         runner = EvalRunner(self.load(), provider)
 
+        # Act
         with patch.object(runner, "_run_verifier") as verifier:
             result = runner.run(
                 RunSelection(comparison_ids=("without-current",)),
                 output_dir=self.output("malformed-final-json"),
             )
 
+        # Assert
         self.assertFalse(result["passed"])
         verifier.assert_not_called()
         self.assertGreater(len(provider.agent_requests), 0)
@@ -2969,8 +3013,9 @@ print(json.dumps({
             self.assertIn("duplicate key", arm["error"])
             self.assertIsNone(arm["artifact"])
 
-    def test_final_json_artifact_runs_end_to_end_without_a_comparator(self) -> None:
-        self.fixture.use_v7_objective("final_output_json")
+    def test_run_when_artifact_is_final_json_completes_without_comparator(self) -> None:
+        # Arrange
+        self.fixture.use_objective(artifact_kind="final_output_json")
         self.fixture.set_verifier(
             """import hashlib
 import json
@@ -3018,11 +3063,14 @@ print(json.dumps({
             return '{"b":2, "a":1.0}'
 
         provider = FakeProvider(agent_handler=json_output)
+
+        # Act
         result = EvalRunner(self.load(), provider).run(
             RunSelection(comparison_ids=("without-current",)),
             output_dir=self.output("final-json-artifact"),
         )
 
+        # Assert
         self.assertTrue(result["passed"], result)
         self.assertEqual(provider.comparator_requests, [])
         self.assertEqual(result["pairs"][0]["winner_basis"], "verifier-pass-v1")
@@ -3039,11 +3087,15 @@ print(json.dumps({
             self.assertTrue(arm["verifier"]["sandbox"]["workspace_read_only"])
             self.assertFalse(arm["verifier"]["workspace_mutated"])
 
-    def test_judged_final_output_requires_a_calibrated_profile(self) -> None:
-        self.fixture.use_v7_judged("final_output_text")
+    def test_preflight_when_final_output_is_judged_requires_calibrated_profile(
+        self,
+    ) -> None:
+        # Arrange
+        self.fixture.use_judged(artifact_kind="final_output_text")
         provider = self.fixture.provider()
         runner = EvalRunner(self.load(), provider, provider)
 
+        # Act + Assert
         with self.assertRaisesRegex(
             RunnerError, "comparator profile does not support.*final_output_text"
         ):
@@ -3052,22 +3104,26 @@ print(json.dumps({
         self.assertEqual(provider.agent_requests, [])
         self.assertEqual(provider.comparator_requests, [])
 
+        # Arrange
         for case in self.fixture.manifest["cases"]:
             case["artifact_contract"] = {"kind": "workspace_diff"}
         self.fixture.save_manifest()
         accepted_provider = self.fixture.provider()
+        # Act
         accepted = EvalRunner(
             self.load(), accepted_provider, accepted_provider
         ).preflight(RunSelection(comparison_ids=("without-current",)))
+        # Assert
         self.assertEqual(
             accepted["cases"][0]["artifact_contract"], {"kind": "workspace_diff"}
         )
         self.assertEqual(accepted_provider.agent_requests, [])
         self.assertEqual(accepted_provider.comparator_requests, [])
 
-    def test_configured_shared_verifier_is_snapshotted_and_mounted_read_only(
+    def test_preflight_when_shared_verifier_is_configured_snapshots_and_mounts_read_only(
         self,
     ) -> None:
+        # Arrange
         self.fixture.isolate_basic_case()
         self.fixture._write_suite(
             "verifier-resources/shared/helper.txt", "configured shared value\n"
@@ -3103,7 +3159,7 @@ print(json.dumps({
 }))
 """,
         )
-        self.fixture.use_v4_objective()
+        self.fixture.use_objective()
         self.fixture.manifest["shared_verifier_dir"] = "verifier-resources/shared"
         self.fixture.manifest["cases"][0]["verifier"]["argv"] = [
             "python3",
@@ -3112,11 +3168,13 @@ print(json.dumps({
         self.fixture.save_manifest()
         provider = self.fixture.provider()
 
+        # Act
         result = EvalRunner(self.load(), provider).run(
             RunSelection(comparison_ids=("without-current",)),
             output_dir=self.output("configured-shared-verifier"),
         )
 
+        # Assert
         self.assertTrue(
             all(
                 arm["verifier"]["passed"]
@@ -3138,7 +3196,10 @@ print(json.dumps({
                     )
                 )
 
-    def test_null_shared_verifier_omits_environment_and_mount(self) -> None:
+    def test_preflight_when_shared_verifier_is_null_omits_environment_and_mount(
+        self,
+    ) -> None:
+        # Arrange
         self.fixture.isolate_basic_case()
         self.fixture._write_suite(
             "cases/testing/_shared/must-not-mount.txt", "legacy fallback\n"
@@ -3162,14 +3223,16 @@ print(json.dumps({
 }))
 """,
         )
-        self.fixture.use_v4_objective()
+        self.fixture.use_objective()
         provider = self.fixture.provider()
 
+        # Act
         result = EvalRunner(self.load(), provider).run(
             RunSelection(comparison_ids=("without-current",)),
             output_dir=self.output("null-shared-verifier"),
         )
 
+        # Assert
         self.assertTrue(
             all(
                 arm["verifier"]["passed"]
@@ -3186,138 +3249,14 @@ print(json.dumps({
             result,
         )
 
-    def test_legacy_shared_verifier_environment_is_preserved(self) -> None:
-        self.fixture._write_suite(
-            "cases/testing/_shared/helper.txt", "legacy shared value\n"
-        )
-        self.fixture._write_suite(
-            "cases/testing/_shared/verifier.py",
-            """import json
-import os
-from pathlib import Path
-
-shared = Path(os.environ["EVAL_SHARED_ROOT"])
-answer = Path(os.environ["EVAL_WORKSPACE"]) / "answer.txt"
-passed = (
-    answer.is_file()
-    and (shared / "helper.txt").read_text(encoding="utf-8") == "legacy shared value\\n"
-)
-print(json.dumps({
-    "passed": passed,
-    "assertions": [{
-        "id": "answer-present",
-        "passed": passed,
-        "evidence": "legacy shared verifier environment remains available",
-    }],
-    "metrics": {},
-}))
-""",
-        )
-        for version in (2, 3):
-            self.fixture.manifest = self.fixture._manifest()
-            self.fixture.isolate_basic_case()
-            if version == 3:
-                self.fixture.use_v3_objective()
-            self.fixture.manifest["cases"][0]["verifier"]["argv"] = [
-                "python3",
-                "cases/testing/_shared/verifier.py",
-            ]
-            self.fixture.save_manifest()
-            provider = self.fixture.provider()
-            suite = self.load()
-            runner = (
-                EvalRunner(suite, provider, provider)
-                if version == 2
-                else EvalRunner(suite, provider)
-            )
-
-            with runner:
-                result = runner.run(
-                    RunSelection(comparison_ids=("without-current",)),
-                    output_dir=self.output(f"legacy-shared-v{version}"),
-                )
-
-            with self.subTest(version=version):
-                self.assertTrue(
-                    all(
-                        arm["verifier"]["passed"]
-                        and any(
-                            value.startswith("BindReadOnlyPaths=")
-                            and value.endswith("/_shared")
-                            for value in arm["verifier"]["sandbox"]["properties"]
-                        )
-                        for pair in result["pairs"]
-                        for arm in pair["arms"].values()
-                    ),
-                    result,
-                )
-
-    def test_absent_legacy_shared_verifier_path_remains_unmounted(self) -> None:
-        verifier = """import json
-import os
-from pathlib import Path
-
-shared_value = os.environ.get("EVAL_SHARED_ROOT")
-answer = Path(os.environ["EVAL_WORKSPACE"]) / "answer.txt"
-passed = (
-    answer.is_file()
-    and shared_value is not None
-    and not Path(shared_value).exists()
-)
-print(json.dumps({
-    "passed": passed,
-    "assertions": [{
-        "id": "answer-present",
-        "passed": passed,
-        "evidence": "absent legacy shared path remains exported but unmounted",
-    }],
-    "metrics": {},
-}))
-"""
-        for version in (2, 3):
-            self.fixture.manifest = self.fixture._manifest()
-            self.fixture.isolate_basic_case()
-            self.fixture._write_suite("cases/basic/oracle/verifier.py", verifier)
-            if version == 3:
-                self.fixture.use_v3_objective()
-            provider = self.fixture.provider()
-            suite = self.load()
-            runner = (
-                EvalRunner(suite, provider, provider)
-                if version == 2
-                else EvalRunner(suite, provider)
-            )
-
-            with runner:
-                result = runner.run(
-                    RunSelection(comparison_ids=("without-current",)),
-                    output_dir=self.output(f"absent-legacy-shared-v{version}"),
-                )
-
-            with self.subTest(version=version):
-                self.assertTrue(
-                    all(
-                        arm["verifier"]["passed"]
-                        and all(
-                            not (
-                                value.startswith("BindReadOnlyPaths=")
-                                and value.endswith("/_shared")
-                            )
-                            for value in arm["verifier"]["sandbox"]["properties"]
-                        )
-                        for pair in result["pairs"]
-                        for arm in pair["arms"].values()
-                    ),
-                    result,
-                )
-
-    def test_configured_shared_verifier_drift_fails_before_provider_dispatch(
+    def test_run_when_shared_verifier_drifts_fails_before_provider_dispatch(
         self,
     ) -> None:
+        # Arrange
         self.fixture.isolate_basic_case()
         shared_path = "verifier-resources/shared/helper.py"
         self.fixture._write_suite(shared_path, "VALUE = 1\n")
-        self.fixture.use_v4_objective()
+        self.fixture.use_objective()
         self.fixture.manifest["shared_verifier_dir"] = "verifier-resources/shared"
         self.fixture.save_manifest()
         provider = self.fixture.provider()
@@ -3329,6 +3268,7 @@ print(json.dumps({
             self.fixture._write_suite(shared_path, "VALUE = 2\n")
             return evidence
 
+        # Act + Assert
         with (
             patch.object(runner, "preflight", side_effect=preflight_then_mutate),
             self.assertRaisesRegex(RunnerError, "source drifted after preflight"),
@@ -3337,12 +3277,16 @@ print(json.dumps({
                 RunSelection(comparison_ids=("without-current",)),
                 output_dir=self.output("shared-verifier-drift"),
             )
+        # Assert
         self.assertEqual(provider.agent_requests, [])
 
-    def test_configured_shared_verifier_revalidates_ancestors_after_load(self) -> None:
+    def test_preflight_when_shared_verifier_ancestor_changes_revalidates_path(
+        self,
+    ) -> None:
+        # Arrange
         self.fixture.isolate_basic_case()
         self.fixture._write_suite("verifier-resources/shared/helper.py", "VALUE = 1\n")
-        self.fixture.use_v4_objective()
+        self.fixture.use_objective()
         self.fixture.manifest["shared_verifier_dir"] = "verifier-resources/shared"
         self.fixture.save_manifest()
         suite = self.load()
@@ -3356,20 +3300,26 @@ print(json.dumps({
         original.symlink_to(external, target_is_directory=True)
         provider = self.fixture.provider()
 
+        # Act + Assert
         with self.assertRaisesRegex(RunnerError, "traverses a symlink"):
             EvalRunner(suite, provider).preflight(
                 RunSelection(comparison_ids=("without-current",))
             )
+        # Assert
         self.assertEqual(provider.agent_requests, [])
 
-    def test_preflight_rejects_unmounted_suite_verifier_scripts(self) -> None:
+    def test_preflight_when_suite_verifier_script_is_unmounted_rejects_manifest(
+        self,
+    ) -> None:
+        # Arrange
         self.fixture.isolate_basic_case()
         self.fixture._write_suite("tools/verifier.py", _PASSING_VERIFIER)
         self.fixture._write_suite("verifier-resources/shared/helper.py", "VALUE = 1\n")
+        # Act + Assert
         for shared_verifier_dir in (None, "verifier-resources/shared"):
             self.fixture.manifest = self.fixture._manifest()
             self.fixture.isolate_basic_case()
-            self.fixture.use_v4_objective()
+            self.fixture.use_objective()
             self.fixture.manifest["shared_verifier_dir"] = shared_verifier_dir
             self.fixture.manifest["cases"][0]["verifier"]["argv"] = [
                 "python3",
@@ -3387,7 +3337,8 @@ print(json.dumps({
                     )
                 self.assertEqual(provider.agent_requests, [])
 
-    def test_verifier_sandbox_hides_host_secrets_processes_and_network(self) -> None:
+    def test_run_when_verifier_executes_in_sandbox_hides_host_resources(self) -> None:
+        # Arrange
         secret = self.fixture.repository / "verifier-secret.txt"
         secret.write_text("must stay hidden", encoding="utf-8")
         runtime_parent = Path(f"/run/user/{os.getuid()}")
@@ -3431,7 +3382,6 @@ environment_minimal = (
         "EVAL_ARTIFACT_KIND",
         "EVAL_ARTIFACT_SHA256",
         "EVAL_CASE_ROOT",
-        "EVAL_SHARED_ROOT",
         "EVAL_TOOL_BIN",
         "EVAL_RESULT_ROOT",
         "EVAL_HOST_UID",
@@ -3470,11 +3420,13 @@ print(json.dumps({{"passed": passed, "assertions": [{{
                     "CLAUDE_CONFIG_DIR": str(config_root),
                 },
             ):
+                # Act
                 result = self.runner().run(
                     RunSelection(comparison_ids=("without-current",)),
                     output_dir=self.output("verifier-sandbox"),
                 )
 
+        # Assert
         self.assertTrue(result["passed"], result)
         for arm in result["pairs"][0]["arms"].values():
             sandbox = arm["verifier"]["sandbox"]
@@ -3734,9 +3686,12 @@ print(json.dumps({"passed": passed, "assertions": [{
         self.assertEqual(events.count("dispatched"), 6)
         self.assertEqual(events.count("failed"), 6)
 
-    def test_injected_fake_generator_is_public_verifier_only(self) -> None:
+    def test_run_when_fake_generator_is_injected_limits_it_to_public_verification(
+        self,
+    ) -> None:
+        # Arrange
         self.fixture.manifest["provider"] = {
-            "kind": "claude",
+            "adapter": "claude-cli",
             "executable": str(self.fixture.fake_codex),
             "model": "fake-model-v1",
             "max_budget_usd": 1.0,
@@ -3746,6 +3701,7 @@ print(json.dumps({"passed": passed, "assertions": [{
 
         judged_provider = self.fixture.provider()
         judged_output = self.output("injected-fake-judged")
+        # Act + Assert
         with self.assertRaisesRegex(
             RunnerError,
             "injected fake generator.*non-holdout verifier-only",
@@ -3880,7 +3836,7 @@ print(json.dumps({"passed": passed, "assertions": [{
         self.assertEqual(result["execution_mode"], "verifier_only")
         self.assertFalse(result["aggregate"]["final_release_authorized"])
         self.assertEqual(result["preflight"]["provider"]["name"], "deterministic-fake")
-        self.assertEqual(snapshot["provider"]["kind"], "claude")
+        self.assertEqual(snapshot["provider"]["adapter"], "claude-cli")
 
     def test_dispatch_callback_is_durable_before_it_returns_to_provider(self) -> None:
         observed_audits: list[dict[str, object]] = []
@@ -4225,7 +4181,10 @@ print(json.dumps({"passed": passed, "assertions": [{
             preflight["sources"]["old"]["source_commit"], self.fixture.baseline_commit
         )
 
-    def test_configured_bundle_source_must_have_regular_entrypoint(self) -> None:
+    def test_preflight_when_bundle_entrypoint_is_not_regular_rejects_source(
+        self,
+    ) -> None:
+        # Arrange
         self.fixture._write(
             "instruction-bundles/demo/references/rule.md", "# Rule\n\nPresent.\n"
         )
@@ -4233,16 +4192,21 @@ print(json.dumps({"passed": passed, "assertions": [{
         self.fixture._git("commit", "-q", "-m", "bundle without entrypoint")
         bundle_commit = self.fixture._git("rev-parse", "HEAD").strip()
         self.fixture.manifest["variants"][2]["source_ref"] = bundle_commit
-        self.fixture.use_v4_objective("instruction-bundles/demo")
+        self.fixture.use_objective(bundle_source="instruction-bundles/demo")
         provider = self.fixture.provider()
 
+        # Act + Assert
         with self.assertRaisesRegex(RunnerError, "regular SKILL.md entrypoint"):
             EvalRunner(self.load(), provider).preflight(
                 RunSelection(comparison_ids=("without-current",))
             )
+        # Assert
         self.assertEqual(provider.agent_requests, [])
 
-    def test_configured_bundle_source_rejects_symlink_traversal(self) -> None:
+    def test_preflight_when_bundle_source_traverses_symlink_rejects_source(
+        self,
+    ) -> None:
+        # Arrange
         self.assertTrue(hasattr(os, "symlink"), "runner requires POSIX symlinks")
         self.fixture._write("instruction-bundles/target/SKILL.md", "# Linked Bundle\n")
         os.symlink(
@@ -4254,16 +4218,21 @@ print(json.dumps({"passed": passed, "assertions": [{
         self.fixture._git("commit", "-q", "-m", "linked bundle")
         bundle_commit = self.fixture._git("rev-parse", "HEAD").strip()
         self.fixture.manifest["variants"][2]["source_ref"] = bundle_commit
-        self.fixture.use_v4_objective("instruction-bundles/demo")
+        self.fixture.use_objective(bundle_source="instruction-bundles/demo")
         provider = self.fixture.provider()
 
+        # Act + Assert
         with self.assertRaisesRegex(RunnerError, "traverses symlink"):
             EvalRunner(self.load(), provider).preflight(
                 RunSelection(comparison_ids=("without-current",))
             )
+        # Assert
         self.assertEqual(provider.agent_requests, [])
 
-    def test_git_ref_configured_bundle_rejects_missing_entrypoint(self) -> None:
+    def test_preflight_when_git_bundle_entrypoint_is_missing_rejects_source(
+        self,
+    ) -> None:
+        # Arrange
         self.fixture._write(
             "instruction-bundles/demo/references/rule.md", "# Rule\n\nPresent.\n"
         )
@@ -4280,16 +4249,22 @@ print(json.dumps({"passed": passed, "assertions": [{
                 "comparator_order": "ab_ba",
             }
         ]
-        self.fixture.use_v4_objective("instruction-bundles/demo")
+        self.fixture.use_objective(
+            bundle_source="instruction-bundles/demo",
+            comparison_ids=("without-old",),
+        )
         provider = self.fixture.provider()
 
+        # Act + Assert
         with self.assertRaisesRegex(RunnerError, "no complete bundle directory"):
             EvalRunner(self.load(), provider).preflight(
                 RunSelection(comparison_ids=("without-old",))
             )
+        # Assert
         self.assertEqual(provider.agent_requests, [])
 
-    def test_git_ref_configured_bundle_rejects_special_entries(self) -> None:
+    def test_preflight_when_git_bundle_has_special_entry_rejects_source(self) -> None:
+        # Arrange
         self.assertTrue(hasattr(os, "symlink"), "runner requires POSIX symlinks")
         self.fixture._write("instruction-bundles/target.md", "# Target\n")
         os.symlink(
@@ -4309,16 +4284,22 @@ print(json.dumps({"passed": passed, "assertions": [{
                 "comparator_order": "ab_ba",
             }
         ]
-        self.fixture.use_v4_objective("instruction-bundles")
+        self.fixture.use_objective(
+            bundle_source="instruction-bundles",
+            comparison_ids=("without-old",),
+        )
         provider = self.fixture.provider()
 
+        # Act + Assert
         with self.assertRaisesRegex(RunnerError, "unsupported git entry"):
             EvalRunner(self.load(), provider).preflight(
                 RunSelection(comparison_ids=("without-old",))
             )
+        # Assert
         self.assertEqual(provider.agent_requests, [])
 
-    def test_dirty_configured_bundle_source_fails_preflight(self) -> None:
+    def test_preflight_when_bundle_source_is_dirty_rejects_source(self) -> None:
+        # Arrange
         self.fixture._write(
             "instruction-bundles/demo/SKILL.md", "# Configured Bundle\n"
         )
@@ -4326,27 +4307,30 @@ print(json.dumps({"passed": passed, "assertions": [{
         self.fixture._git("commit", "-q", "-m", "configured bundle")
         bundle_commit = self.fixture._git("rev-parse", "HEAD").strip()
         self.fixture.manifest["variants"][2]["source_ref"] = bundle_commit
-        self.fixture.use_v4_objective("instruction-bundles/demo")
+        self.fixture.use_objective(bundle_source="instruction-bundles/demo")
         self.fixture._write(
             "instruction-bundles/demo/SKILL.md",
             "# Configured Bundle\n\nUncommitted change.\n",
         )
         provider = self.fixture.provider()
 
+        # Act + Assert
         with self.assertRaisesRegex(RunnerError, "commit it before A/B evaluation"):
             EvalRunner(self.load(), provider).preflight(
                 RunSelection(comparison_ids=("without-current",))
             )
+        # Assert
         self.assertEqual(provider.agent_requests, [])
 
-    def test_configured_bundle_source_drift_after_preflight_fails_closed(self) -> None:
+    def test_run_when_bundle_source_drifts_after_preflight_fails_closed(self) -> None:
+        # Arrange
         bundle_path = "instruction-bundles/demo/SKILL.md"
         self.fixture._write(bundle_path, "# Configured Bundle\n")
         self.fixture._git("add", "instruction-bundles")
         self.fixture._git("commit", "-q", "-m", "configured bundle")
         bundle_commit = self.fixture._git("rev-parse", "HEAD").strip()
         self.fixture.manifest["variants"][2]["source_ref"] = bundle_commit
-        self.fixture.use_v4_objective("instruction-bundles/demo")
+        self.fixture.use_objective(bundle_source="instruction-bundles/demo")
         provider = self.fixture.provider()
         runner = EvalRunner(self.load(), provider)
         original_preflight = runner.preflight
@@ -4358,11 +4342,13 @@ print(json.dumps({"passed": passed, "assertions": [{
             )
             return evidence
 
+        # Act
         with patch.object(runner, "preflight", side_effect=preflight_then_mutate):
             result = runner.run(
                 RunSelection(comparison_ids=("without-current",)),
                 output_dir=self.output("configured-bundle-drift"),
             )
+        # Assert
         self.assertFalse(result["passed"])
         self.assertTrue(
             all(
@@ -4374,7 +4360,10 @@ print(json.dumps({"passed": passed, "assertions": [{
             all(request.variant_id != "current" for request in provider.agent_requests)
         )
 
-    def test_unrelated_uncommitted_path_does_not_dirty_configured_bundle(self) -> None:
+    def test_preflight_when_unrelated_path_is_dirty_accepts_configured_bundle(
+        self,
+    ) -> None:
+        # Arrange
         self.fixture._write(
             "instruction-bundles/demo/SKILL.md", "# Configured Bundle\n"
         )
@@ -4382,19 +4371,24 @@ print(json.dumps({"passed": passed, "assertions": [{
         self.fixture._git("commit", "-q", "-m", "configured bundle")
         bundle_commit = self.fixture._git("rev-parse", "HEAD").strip()
         self.fixture.manifest["variants"][2]["source_ref"] = bundle_commit
-        self.fixture.use_v4_objective("instruction-bundles/demo")
+        self.fixture.use_objective(bundle_source="instruction-bundles/demo")
         self.fixture._write("unrelated.txt", "uncommitted but unrelated\n")
         provider = self.fixture.provider()
 
+        # Act
         preflight = EvalRunner(self.load(), provider).preflight(
             RunSelection(comparison_ids=("without-current",))
         )
+        # Assert
         self.assertEqual(
             preflight["sources"]["current"]["expected_source_commit"], bundle_commit
         )
         self.assertEqual(provider.agent_requests, [])
 
-    def test_v4_ignores_untracked_empty_bundle_directories(self) -> None:
+    def test_preflight_when_bundle_has_empty_directories_ignores_untracked_entries(
+        self,
+    ) -> None:
+        # Arrange
         self.fixture._write(
             "instruction-bundles/demo/SKILL.md", "# Configured Bundle\n"
         )
@@ -4403,21 +4397,25 @@ print(json.dumps({"passed": passed, "assertions": [{
         bundle_commit = self.fixture._git("rev-parse", "HEAD").strip()
         self.fixture.manifest["variants"][1]["git_ref"] = bundle_commit
         self.fixture.manifest["variants"][2]["source_ref"] = bundle_commit
-        self.fixture.use_v4_objective("instruction-bundles/demo")
+        self.fixture.use_objective(bundle_source="instruction-bundles/demo")
         empty = self.fixture.repository / "instruction-bundles/demo"
         for index in range(runner_module.MAX_TREE_DEPTH + 1):
             empty /= f"empty-{index}"
         empty.mkdir(parents=True)
 
         provider = self.fixture.provider()
+
+        # Act
         preflight = EvalRunner(self.load(), provider).preflight(
             RunSelection(comparison_ids=("old-current",))
         )
 
+        # Assert
         self.assertFalse(preflight["sources"]["current"]["source_dirty"])
         self.assertEqual(provider.agent_requests, [])
 
-    def test_v4_bounds_empty_directory_traversal_entries(self) -> None:
+    def test_scan_tree_when_empty_entries_exceed_limit_rejects_traversal(self) -> None:
+        # Arrange
         self.fixture._write(
             "instruction-bundles/demo/SKILL.md", "# Configured Bundle\n"
         )
@@ -4425,11 +4423,12 @@ print(json.dumps({"passed": passed, "assertions": [{
         self.fixture._git("commit", "-q", "-m", "configured bundle")
         bundle_commit = self.fixture._git("rev-parse", "HEAD").strip()
         self.fixture.manifest["variants"][2]["source_ref"] = bundle_commit
-        self.fixture.use_v4_objective("instruction-bundles/demo")
+        self.fixture.use_objective(bundle_source="instruction-bundles/demo")
         bundle = self.fixture.repository / "instruction-bundles/demo"
         for index in range(3):
             bundle.joinpath(f"empty-{index}").mkdir()
 
+        # Act + Assert
         with (
             patch.object(runner_module, "MAX_WORKTREE_SCAN_ENTRIES", 2),
             patch.object(
@@ -4447,7 +4446,10 @@ print(json.dumps({"passed": passed, "assertions": [{
                 ignore_empty_directories=True,
             )
 
-    def test_v4_bounds_empty_directory_traversal_depth(self) -> None:
+    def test_preflight_when_empty_directory_depth_exceeds_limit_rejects_bundle(
+        self,
+    ) -> None:
+        # Arrange
         self.fixture._write(
             "instruction-bundles/demo/SKILL.md", "# Configured Bundle\n"
         )
@@ -4455,12 +4457,13 @@ print(json.dumps({"passed": passed, "assertions": [{
         self.fixture._git("commit", "-q", "-m", "configured bundle")
         bundle_commit = self.fixture._git("rev-parse", "HEAD").strip()
         self.fixture.manifest["variants"][2]["source_ref"] = bundle_commit
-        self.fixture.use_v4_objective("instruction-bundles/demo")
+        self.fixture.use_objective(bundle_source="instruction-bundles/demo")
         empty = self.fixture.repository / "instruction-bundles/demo"
         for index in range(3):
             empty /= f"empty-{index}"
         empty.mkdir(parents=True)
 
+        # Act + Assert
         with (
             patch.object(runner_module, "MAX_WORKTREE_SCAN_DEPTH", 2),
             self.assertRaisesRegex(
@@ -4471,22 +4474,29 @@ print(json.dumps({"passed": passed, "assertions": [{
                 RunSelection(comparison_ids=("without-current",))
             )
 
-    def test_configured_bundle_file_limit_matches_git_and_worktree(self) -> None:
+    def test_preflight_when_bundle_exceeds_file_limit_matches_git_and_worktree(
+        self,
+    ) -> None:
+        # Arrange
         self.fixture._write("instruction-bundles/demo/SKILL.md", "12345")
         self.fixture._git("add", "instruction-bundles")
         self.fixture._git("commit", "-q", "-m", "oversized bundle file")
         bundle_commit = self.fixture._git("rev-parse", "HEAD").strip()
         self.fixture.manifest["variants"][1]["git_ref"] = bundle_commit
         self.fixture.manifest["variants"][2]["source_ref"] = bundle_commit
-        self.fixture.use_v4_objective("instruction-bundles/demo")
+        self.fixture.use_objective(bundle_source="instruction-bundles/demo")
 
+        # Act + Assert
         with patch.object(runner_module, "MAX_FILE_BYTES", 4):
             self.assert_configured_bundle_rejected_for_git_and_worktree(
                 "bundle snapshot file exceeds 4 bytes",
                 "tree file exceeds 4 bytes",
             )
 
-    def test_configured_bundle_total_limit_matches_git_and_worktree(self) -> None:
+    def test_preflight_when_bundle_exceeds_total_limit_matches_git_and_worktree(
+        self,
+    ) -> None:
+        # Arrange
         self.fixture._write("instruction-bundles/demo/SKILL.md", "1234")
         self.fixture._write("instruction-bundles/demo/rule.md", "5678")
         self.fixture._git("add", "instruction-bundles")
@@ -4494,8 +4504,9 @@ print(json.dumps({"passed": passed, "assertions": [{
         bundle_commit = self.fixture._git("rev-parse", "HEAD").strip()
         self.fixture.manifest["variants"][1]["git_ref"] = bundle_commit
         self.fixture.manifest["variants"][2]["source_ref"] = bundle_commit
-        self.fixture.use_v4_objective("instruction-bundles/demo")
+        self.fixture.use_objective(bundle_source="instruction-bundles/demo")
 
+        # Act + Assert
         with (
             patch.object(runner_module, "MAX_FILE_BYTES", 4),
             patch.object(runner_module, "MAX_TREE_BYTES", 7),
@@ -4505,7 +4516,10 @@ print(json.dumps({"passed": passed, "assertions": [{
                 "tree exceeds 7 bytes",
             )
 
-    def test_configured_bundle_entry_limit_matches_git_and_worktree(self) -> None:
+    def test_preflight_when_bundle_exceeds_entry_limit_matches_git_and_worktree(
+        self,
+    ) -> None:
+        # Arrange
         self.fixture._write("instruction-bundles/demo/SKILL.md", "# Bundle\n")
         self.fixture._write("instruction-bundles/demo/references/rule.md", "rule\n")
         self.fixture._git("add", "instruction-bundles")
@@ -4513,15 +4527,19 @@ print(json.dumps({"passed": passed, "assertions": [{
         bundle_commit = self.fixture._git("rev-parse", "HEAD").strip()
         self.fixture.manifest["variants"][1]["git_ref"] = bundle_commit
         self.fixture.manifest["variants"][2]["source_ref"] = bundle_commit
-        self.fixture.use_v4_objective("instruction-bundles/demo")
+        self.fixture.use_objective(bundle_source="instruction-bundles/demo")
 
+        # Act + Assert
         with patch.object(runner_module, "MAX_TREE_ENTRIES", 2):
             self.assert_configured_bundle_rejected_for_git_and_worktree(
                 "bundle snapshot exceeds maximum entries 2",
                 "tree exceeds maximum entries 2",
             )
 
-    def test_configured_bundle_depth_limit_matches_git_and_worktree(self) -> None:
+    def test_preflight_when_bundle_exceeds_depth_limit_matches_git_and_worktree(
+        self,
+    ) -> None:
+        # Arrange
         self.fixture._write("instruction-bundles/demo/SKILL.md", "# Bundle\n")
         self.fixture._write(
             "instruction-bundles/demo/references/nested/rule.md", "rule\n"
@@ -4531,15 +4549,19 @@ print(json.dumps({"passed": passed, "assertions": [{
         bundle_commit = self.fixture._git("rev-parse", "HEAD").strip()
         self.fixture.manifest["variants"][1]["git_ref"] = bundle_commit
         self.fixture.manifest["variants"][2]["source_ref"] = bundle_commit
-        self.fixture.use_v4_objective("instruction-bundles/demo")
+        self.fixture.use_objective(bundle_source="instruction-bundles/demo")
 
+        # Act + Assert
         with patch.object(runner_module, "MAX_TREE_DEPTH", 1):
             self.assert_configured_bundle_rejected_for_git_and_worktree(
                 "bundle snapshot exceeds maximum depth 1",
                 "tree exceeds maximum depth 1",
             )
 
-    def test_git_bundle_metadata_is_bounded_while_streaming(self) -> None:
+    def test_preflight_when_git_bundle_metadata_exceeds_limit_rejects_stream(
+        self,
+    ) -> None:
+        # Arrange
         self.fixture._write(
             "instruction-bundles/demo/SKILL.md", "# Configured Bundle\n"
         )
@@ -4550,7 +4572,7 @@ print(json.dumps({"passed": passed, "assertions": [{
         self.fixture._git("commit", "-q", "-m", "bundle metadata")
         bundle_commit = self.fixture._git("rev-parse", "HEAD").strip()
         self.fixture.manifest["variants"][1]["git_ref"] = bundle_commit
-        self.fixture.use_v4_objective("instruction-bundles/demo")
+        self.fixture.use_objective(bundle_source="instruction-bundles/demo")
         suite = self.load()
         without = next(variant for variant in suite.variants if variant.id == "without")
         old = next(variant for variant in suite.variants if variant.id == "old")
@@ -4562,6 +4584,7 @@ print(json.dumps({"passed": passed, "assertions": [{
         )
         git_suite = replace(suite, variants=(without, old), comparisons=(comparison,))
 
+        # Act + Assert
         with (
             patch.object(runner_module, "MAX_GIT_TREE_METADATA_BYTES", 32),
             self.assertRaisesRegex(RunnerError, "git tree metadata exceeds 32 bytes"),
@@ -4673,7 +4696,7 @@ class HoldoutReleaseProtocolTests(unittest.TestCase):
         self.provider = self.fixture.provider()
         seed_runner = self.production_runner(self.runner(production=False))
         runtime = seed_runner._load_comparator_runtime()
-        self.payload = self.fixture.holdout_plan_payload()
+        self.payload = self.fixture.holdout_plan_payload(seed_runner)
         self.payload["comparator_release_sha256"] = runtime.release_summary[
             "release_sha256"
         ]
@@ -4694,46 +4717,17 @@ class HoldoutReleaseProtocolTests(unittest.TestCase):
         bypass_generator_authority: bool = True,
         bypass_comparator_authority: bool = True,
     ) -> EvalRunner:
-        runner = runner or self.runner(production=False)
-        runtime = runner._load_comparator_runtime()
-        release = copy.deepcopy(runtime.bundle.release)
-        release["test_release"] = False
-        certification = replace(
-            runtime.certification,
-            valid=True,
-            evidence_path=self.fixture.root / "live-evidence.json",
-            evidence_sha256="c" * 64,
-            result_sha256="d" * 64,
-            actual_models=("fake-sonnet-v2.0",),
-            executable_sha256="e" * 64,
-            error=None,
+        return _production_runner(
+            runner or self.runner(production=False),
+            self.addCleanup,
+            bypass_generator_authority=bypass_generator_authority,
+            bypass_comparator_authority=bypass_comparator_authority,
         )
-        runner._comparator_runtime = replace(
-            runtime,
-            bundle=replace(runtime.bundle, release=release),
-            release_summary={
-                **runtime.release_summary,
-                "release_sha256": canonical_sha256(release),
-            },
-            certification=certification,
-        )
-        if bypass_generator_authority:
-            patcher = patch.object(
-                runner,
-                "_assert_generator_release_authority",
-                return_value=None,
-            )
-            patcher.start()
-            self.addCleanup(patcher.stop)
-        if bypass_comparator_authority:
-            patcher = patch.object(
-                runner,
-                "_production_comparator_release_authoritative",
-                return_value=True,
-            )
-            patcher.start()
-            self.addCleanup(patcher.stop)
-        return runner
+
+    def plan_payload(self, suite: SuiteSpec | None = None) -> dict[str, object]:
+        current_suite = suite or load_suite(self.fixture.manifest_path)
+        with self.runner(current_suite) as runner:
+            return self.fixture.holdout_plan_payload(runner)
 
     def selection(self, **changes) -> RunSelection:
         values = {
@@ -4747,29 +4741,28 @@ class HoldoutReleaseProtocolTests(unittest.TestCase):
     def binding_inputs(self):
         cases = self.suite.cases
         comparisons = self.suite.comparisons
+        plan = load_holdout_plan(self.plan_path)
         source_records = {
-            "candidate": {"source_commit": self.fixture.treatment_commit},
-            "original": {"source_commit": self.fixture.baseline_commit},
+            binding.variant_id: {
+                "kind": binding.kind,
+                "source_commit": binding.source_commit,
+                "source_sha256_by_case": dict(binding.source_sha256_by_case),
+            }
+            for binding in plan.source_bindings
         }
         case_records = copy.deepcopy(self.payload["cases"])
         return cases, comparisons, source_records, case_records
 
-    def objective_v5_suite(self) -> SuiteSpec:
-        self.fixture.manifest["schema_version"] = 5
-        self.fixture.manifest["evaluation_mode"] = "objective_only"
-        self.fixture.manifest.pop("comparator")
-        self.fixture.manifest.pop("comparator_profile", None)
-        self.fixture.manifest["shared_verifier_dir"] = None
-        self.fixture.manifest["holdout"] = {"comparison_ids": list(self.comparison_ids)}
+    def objective_suite(self) -> SuiteSpec:
         self.fixture.manifest["cases"] = [
             case
             for case in self.fixture.manifest["cases"]
             if case["skill"] == "engineering"
         ]
-        for case in self.fixture.manifest["cases"]:
-            case["bundle_source"] = "skills/engineering"
-            case.pop("comparator_contract")
-        self.fixture.save_manifest()
+        self.fixture.use_objective(
+            comparison_ids=self.comparison_ids,
+            bundle_source="skills/engineering",
+        )
         return load_suite(self.fixture.manifest_path)
 
     def test_non_authoritative_generator_rejects_holdout_before_agent_turns(
@@ -4798,9 +4791,12 @@ class HoldoutReleaseProtocolTests(unittest.TestCase):
         self.assertEqual(self.provider.comparator_requests, [])
         self.assertFalse(output.exists())
 
-    def test_injected_fake_generator_cannot_run_holdout_verifier_only(self) -> None:
+    def test_preflight_when_fake_generator_targets_holdout_rejects_verifier_only_run(
+        self,
+    ) -> None:
+        # Arrange
         self.fixture.manifest["provider"] = {
-            "kind": "claude",
+            "adapter": "claude-cli",
             "executable": "claude",
             "model": "fake-model-v1",
             "max_budget_usd": 1.0,
@@ -4812,19 +4808,26 @@ class HoldoutReleaseProtocolTests(unittest.TestCase):
         runner = self.production_runner(EvalRunner(suite, provider, provider))
         output = Path(self.temporary.name) / "fake-holdout-must-not-exist"
 
+        # Act + Assert
         with self.assertRaisesRegex(
             RunnerError,
             "injected fake generator.*non-holdout verifier-only",
         ):
             runner.run(self.selection(verifier_only=True), output_dir=output)
 
+        # Assert
         self.assertEqual(provider.agent_requests, [])
         self.assertEqual(provider.comparator_requests, [])
         self.assertFalse(output.exists())
 
-    def test_production_holdout_rejects_fake_and_injected_authority(self) -> None:
+    def test_preflight_when_holdout_authority_is_fake_or_injected_rejects_run(
+        self,
+    ) -> None:
+        # Arrange
         fake_runner = self.production_runner(bypass_generator_authority=False)
         fake_output = self.fixture.root / "fake-production-plan.json"
+
+        # Act + Assert
         with self.assertRaisesRegex(RunnerError, "exact built-in Claude CLI generator"):
             fake_runner.prepare_holdout_plan(
                 output_path=fake_output,
@@ -4838,6 +4841,7 @@ class HoldoutReleaseProtocolTests(unittest.TestCase):
         self.assertEqual(self.provider.agent_requests, [])
         self.assertEqual(self.provider.comparator_requests, [])
 
+        # Arrange
         class MasqueradingProvider:
             def __init__(self) -> None:
                 self.agent_requests: list[AgentRequest] = []
@@ -4866,7 +4870,7 @@ class HoldoutReleaseProtocolTests(unittest.TestCase):
                 raise AssertionError("masquerading provider reached comparison")
 
         self.fixture.manifest["provider"] = {
-            "kind": "claude",
+            "adapter": "claude-cli",
             "executable": str(self.fixture.fake_codex),
             "model": "fake-model-v1",
             "max_budget_usd": 1.0,
@@ -4885,6 +4889,7 @@ class HoldoutReleaseProtocolTests(unittest.TestCase):
             bypass_generator_authority=False,
         )
         injected_output = self.fixture.root / "injected-production-plan.json"
+        # Act + Assert
         with self.assertRaisesRegex(RunnerError, "exact built-in Claude CLI generator"):
             injected_runner.prepare_holdout_plan(
                 output_path=injected_output,
@@ -4897,11 +4902,13 @@ class HoldoutReleaseProtocolTests(unittest.TestCase):
         self.assertEqual(masquerader.agent_requests, [])
         self.assertFalse(injected_output.exists())
 
+        # Arrange
         exact_injected = object.__new__(ClaudeCliProvider)
         exact_injected._config = claude_suite.provider
         exact_injected._version = "injected-exact-class"
         exact_injected._verified_executable = SimpleNamespace(sha256="f" * 64)
         exact_output = self.fixture.root / "exact-injected-production-plan.json"
+        # Act + Assert
         with self.assertRaisesRegex(
             RunnerError, "authority runtime provenance is unavailable"
         ):
@@ -4912,11 +4919,12 @@ class HoldoutReleaseProtocolTests(unittest.TestCase):
             )
         self.assertFalse(exact_output.exists())
 
-    def test_manifest_built_claude_authority_is_reachable_without_transport(
+    def test_preflight_when_claude_authority_is_manifest_built_reaches_holdout_without_transport(
         self,
     ) -> None:
+        # Arrange
         self.fixture.manifest["provider"] = {
-            "kind": "claude",
+            "adapter": "claude-cli",
             "executable": str(self.fixture.fake_codex),
             "model": "fake-model-v1",
             "max_budget_usd": 1.0,
@@ -4925,6 +4933,7 @@ class HoldoutReleaseProtocolTests(unittest.TestCase):
         self.fixture.save_manifest()
         suite = load_suite(self.fixture.manifest_path)
 
+        # Act
         with (
             patch.object(
                 ClaudeCliProvider,
@@ -4943,6 +4952,7 @@ class HoldoutReleaseProtocolTests(unittest.TestCase):
             ) as probe_seccomp,
         ):
             runner = EvalRunner(suite, comparator_provider=self.provider)
+        # Assert
         capture_version.assert_called_once_with()
         probe_sandbox.assert_called_once_with()
         probe_seccomp.assert_called_once()
@@ -4950,6 +4960,8 @@ class HoldoutReleaseProtocolTests(unittest.TestCase):
         self.production_runner(runner, bypass_generator_authority=False)
 
         output = self.fixture.root / "manifest-built-production-plan.json"
+
+        # Act
         result = runner.prepare_holdout_plan(
             output_path=output,
             plan_id="manifest-built-production-v1",
@@ -4962,6 +4974,7 @@ class HoldoutReleaseProtocolTests(unittest.TestCase):
         ).hexdigest()
         plan = load_holdout_plan(output)
 
+        # Assert
         self.assertIs(type(runner.agent_provider), ClaudeCliProvider)
         self.assertFalse(runner._agent_provider_injected)
         self.assertIs(runner.agent_provider, runner._agent_provider_instance)
@@ -5045,9 +5058,11 @@ class HoldoutReleaseProtocolTests(unittest.TestCase):
                     )
         return pairs
 
-    def test_holdout_selection_rejects_every_filter_and_profile_bypass(self) -> None:
+    def test_selected_when_holdout_selection_or_profile_is_invalid_rejects_request(
+        self,
+    ) -> None:
+        # Arrange
         runner = self.runner()
-        runner._selected(self.selection())
         invalid = (
             (
                 "explicit holdout plan",
@@ -5073,74 +5088,49 @@ class HoldoutReleaseProtocolTests(unittest.TestCase):
                 ),
             ),
         )
-        for message, selection in invalid:
-            with self.subTest(message=message, selection=selection):
-                with self.assertRaisesRegex(RunnerError, message):
-                    runner._selected(selection)
-
-        wrong_semantics = replace(
-            self.suite,
-            comparisons=(
-                replace(self.suite.comparisons[0], control="no-skill"),
-                self.suite.comparisons[1],
-            ),
-        )
-        with self.assertRaisesRegex(RunnerError, "semantics differ"):
-            self.runner(wrong_semantics)._selected(self.selection())
-
-        wrong_variants = replace(
-            self.suite,
-            variants=tuple(
-                replace(variant, kind="git_ref")
-                if variant.id == "candidate"
-                else variant
-                for variant in self.suite.variants
-            ),
-        )
-        with self.assertRaisesRegex(RunnerError, "variant kinds differ"):
-            self.runner(wrong_variants)._selected(self.selection())
-
-        stale_candidate = replace(
-            self.suite,
-            variants=tuple(
-                replace(variant, source_ref=self.fixture.treatment_commit)
-                if variant.id == "candidate"
-                else variant
-                for variant in self.suite.variants
-            ),
-        )
-        with self.assertRaisesRegex(RunnerError, "dynamically.*HEAD"):
-            self.runner(stale_candidate)._selected(self.selection())
-
         too_few = replace(
             self.suite,
             cases=tuple(
                 case for case in self.suite.cases if case.id != "engineering-0"
             ),
         )
-        with self.assertRaisesRegex(RunnerError, "at least 8 cases"):
-            self.runner(too_few)._selected(self.selection())
-
         wrong_skill = replace(
             self.suite,
             cases=(replace(self.suite.cases[0], skill="demo"), *self.suite.cases[1:]),
         )
+
+        # Act + Assert
+        for message, selection in invalid:
+            with self.subTest(message=message, selection=selection):
+                with self.assertRaisesRegex(RunnerError, message):
+                    runner._selected(selection)
+
+        with self.assertRaisesRegex(RunnerError, "at least 8 cases"):
+            self.runner(too_few)._selected(self.selection())
+
         with self.assertRaisesRegex(RunnerError, "at least 8 cases"):
             self.runner(wrong_skill)._selected(self.selection())
 
-    def test_holdout_release_scope_is_derived_from_selected_skills(self) -> None:
+    def test_prepare_holdout_plan_when_skills_are_selected_derives_release_scope(
+        self,
+    ) -> None:
+        # Arrange
         self.fixture.configure_holdout(("demo",))
         self.suite = load_suite(self.fixture.manifest_path)
-        self.payload = self.fixture.holdout_plan_payload()
+        self.payload = self.plan_payload(self.suite)
         self.plan_path = self.fixture.save_holdout_plan(
             self.payload, name="demo-holdout-plan.json"
         )
         selection = self.selection()
         runner = self.runner()
 
+        # Act
         cases, _comparisons = runner._selected(selection)
+
+        # Assert
         self.assertEqual({case.skill for case in cases}, {"demo"})
 
+        # Act
         holdout_plan = load_holdout_plan(self.plan_path)
         aggregate = _aggregate(
             self.release_pairs(),  # type: ignore[arg-type]
@@ -5151,15 +5141,17 @@ class HoldoutReleaseProtocolTests(unittest.TestCase):
             release_authority_validated=True,
             generator_release_authoritative=True,
         )
+        # Assert
         self.assertEqual(
             set(aggregate["by_comparison_skill"]["candidate-vs-original"]),
             {"demo"},
         )
         self.assertTrue(aggregate["final_release_authorized"])
 
-    def test_holdout_preflight_rejects_release_baseline_mismatch_and_same_candidate(
+    def test_preflight_when_holdout_runtime_drifts_or_sources_match_rejects_plan(
         self,
     ) -> None:
+        # Arrange
         mismatched_runner = self.runner()
         runtime = mismatched_runner._load_comparator_runtime()
         mismatched_release = copy.deepcopy(runtime.bundle.release)
@@ -5168,9 +5160,11 @@ class HoldoutReleaseProtocolTests(unittest.TestCase):
             runtime,
             bundle=replace(runtime.bundle, release=mismatched_release),
         )
-        with self.assertRaisesRegex(RunnerError, "release-owned frozen original"):
+        # Act + Assert
+        with self.assertRaisesRegex(RunnerError, "release bytes drifted after load"):
             mismatched_runner.preflight(self.selection())
 
+        # Arrange
         original_variant = next(
             variant
             for variant in self.fixture.manifest["variants"]
@@ -5179,48 +5173,19 @@ class HoldoutReleaseProtocolTests(unittest.TestCase):
         original_variant["git_ref"] = self.fixture.treatment_commit
         self.fixture.save_manifest()
         same_suite = load_suite(self.fixture.manifest_path)
-        same_runner = self.runner(same_suite, production=False)
-        same_release = copy.deepcopy(runtime.bundle.release)
-        same_release["runtime_adapter"]["frozen_original_commit"] = (
-            self.fixture.treatment_commit
-        )
-        same_runner._comparator_runtime = replace(
-            runtime,
-            bundle=replace(runtime.bundle, release=same_release),
-        )
-        with (
-            patch.object(
-                same_runner, "_assert_generator_release_authority", return_value=None
-            ),
-            self.assertRaisesRegex(RunnerError, "must differ"),
-        ):
+        same_runner = self.runner(same_suite)
+        same_runner._comparator_runtime = runtime
+        # Act + Assert
+        with self.assertRaisesRegex(RunnerError, "identical evaluated sources"):
             same_runner.preflight(self.selection())
+        # Assert
         self.assertEqual(self.provider.agent_requests, [])
         self.assertEqual(self.provider.comparator_requests, [])
 
-    def test_suite_only_alternate_baseline_fails_before_plan_write(self) -> None:
-        original = next(
-            variant
-            for variant in self.fixture.manifest["variants"]
-            if variant["id"] == "original"
-        )
-        original["git_ref"] = self.fixture.treatment_commit
-        self.fixture.save_manifest()
-        suite = load_suite(self.fixture.manifest_path)
-        output = self.fixture.root / "alternate-baseline-plan.json"
-        with self.assertRaisesRegex(RunnerError, "baseline authority"):
-            self.runner(suite).prepare_holdout_plan(
-                output_path=output,
-                plan_id="alternate-baseline-v1",
-                reviewers=("reviewer-a",),
-                freeze_record="review:freeze:alternate-baseline-v1",
-                seal_record="review:seal:alternate-baseline-v1",
-            )
-        self.assertFalse(output.exists())
-        self.assertEqual(self.provider.agent_requests, [])
-        self.assertEqual(self.provider.comparator_requests, [])
-
-    def test_holdout_rejects_pseudoreplication_by_tree_and_fingerprint(self) -> None:
+    def test_holdout_authority_when_case_identity_is_duplicated_rejects_pseudoreplication(
+        self,
+    ) -> None:
+        # Arrange
         duplicate_tree = copy.deepcopy(self.payload)
         duplicate_tree["cases"][1]["case_tree_sha256"] = duplicate_tree["cases"][0][
             "case_tree_sha256"
@@ -5228,9 +5193,12 @@ class HoldoutReleaseProtocolTests(unittest.TestCase):
         duplicate_tree_plan = self.fixture.save_holdout_plan(
             duplicate_tree, name="duplicate-tree-plan.json"
         )
+
+        # Act + Assert
         with self.assertRaisesRegex(HoldoutPlanError, "globally unique"):
             load_holdout_plan(duplicate_tree_plan)
 
+        # Arrange
         duplicate_fingerprint = copy.deepcopy(self.payload)
         duplicate_fingerprint["cases"][1]["release_case_fingerprint"] = (
             duplicate_fingerprint["cases"][0]["release_case_fingerprint"]
@@ -5238,9 +5206,12 @@ class HoldoutReleaseProtocolTests(unittest.TestCase):
         duplicate_fingerprint_plan = self.fixture.save_holdout_plan(
             duplicate_fingerprint, name="duplicate-fingerprint-plan.json"
         )
+
+        # Act + Assert
         with self.assertRaisesRegex(HoldoutPlanError, "globally unique"):
             load_holdout_plan(duplicate_fingerprint_plan)
 
+        # Arrange
         first = self.fixture.manifest["cases"][0]
         second = self.fixture.manifest["cases"][1]
         first_root = self.fixture.suite_root / Path(first["prompt_file"]).parent
@@ -5254,19 +5225,9 @@ class HoldoutReleaseProtocolTests(unittest.TestCase):
         nonce.parent.mkdir()
         nonce.write_text("renamed-copy-nonce\n", encoding="utf-8")
         self.fixture.save_manifest()
-        duplicated_bindings = self.fixture.holdout_plan_payload()["cases"]
-        self.assertNotEqual(
-            duplicated_bindings[0]["case_tree_sha256"],
-            duplicated_bindings[1]["case_tree_sha256"],
-        )
-        self.assertEqual(
-            duplicated_bindings[0]["release_case_fingerprint"],
-            duplicated_bindings[1]["release_case_fingerprint"],
-        )
-        duplicated_suite = load_suite(self.fixture.manifest_path)
-        with self.assertRaisesRegex(RunnerError, "task-content.*pseudoreplication"):
-            self.runner(duplicated_suite).preflight(self.selection())
         output = self.fixture.root / "duplicate-task-plan.json"
+
+        # Act + Assert
         with self.assertRaisesRegex(RunnerError, "task-content.*pseudoreplication"):
             self.production_runner().prepare_holdout_plan(
                 output_path=output,
@@ -5275,6 +5236,8 @@ class HoldoutReleaseProtocolTests(unittest.TestCase):
                 freeze_record="review:freeze:duplicate-task-v1",
                 seal_record="review:seal:duplicate-task-v1",
             )
+
+        # Assert
         self.assertFalse(output.exists())
         self.assertEqual(self.provider.agent_requests, [])
         self.assertEqual(self.provider.comparator_requests, [])
@@ -5390,17 +5353,22 @@ class HoldoutReleaseProtocolTests(unittest.TestCase):
         )
         self.assertTrue(all(value != baseline for value in included))
 
-    def test_oracle_drift_keeps_task_key_but_breaks_sealed_tree_integrity(self) -> None:
-        before = self.fixture.holdout_plan_payload()
+    def test_prepare_holdout_plan_when_oracle_drifts_preserves_task_key_and_breaks_integrity(
+        self,
+    ) -> None:
+        # Arrange
+        before = self.plan_payload()
         oracle = (
             self.fixture.suite_root
             / self.fixture.manifest["cases"][0]["verifier"]["argv"][1]
         )
+        # Act
         oracle.write_text(
             oracle.read_text(encoding="utf-8") + "\n# drift\n",
             encoding="utf-8",
         )
-        after = self.fixture.holdout_plan_payload()
+        after = self.plan_payload()
+        # Assert
         self.assertEqual(
             before["cases"][0]["release_case_fingerprint"],
             after["cases"][0]["release_case_fingerprint"],
@@ -5413,15 +5381,22 @@ class HoldoutReleaseProtocolTests(unittest.TestCase):
             before["cases"][0]["shared_tree_sha256"],
             after["cases"][0]["shared_tree_sha256"],
         )
+        # Act + Assert
         with self.assertRaisesRegex(RunnerError, "cases do not exactly match"):
             self.runner().preflight(self.selection())
 
-    def test_shared_drift_keeps_task_key_but_breaks_sealed_tree_integrity(self) -> None:
-        before = self.fixture.holdout_plan_payload()
+    def test_prepare_holdout_plan_when_unconfigured_shared_files_change_preserves_integrity(
+        self,
+    ) -> None:
+        # Arrange
+        before = self.plan_payload()
         self.fixture._write_suite(
             "cases/testing/_shared/helper.py", "SHARED_SENTINEL = 1\n"
         )
-        after = self.fixture.holdout_plan_payload()
+        # Act
+        after = self.plan_payload()
+
+        # Assert
         self.assertEqual(
             [case["release_case_fingerprint"] for case in before["cases"]],
             [case["release_case_fingerprint"] for case in after["cases"]],
@@ -5430,19 +5405,20 @@ class HoldoutReleaseProtocolTests(unittest.TestCase):
             [case["case_tree_sha256"] for case in before["cases"]],
             [case["case_tree_sha256"] for case in after["cases"]],
         )
-        self.assertNotEqual(
+        self.assertEqual(
             [case["shared_tree_sha256"] for case in before["cases"]],
             [case["shared_tree_sha256"] for case in after["cases"]],
         )
-        with self.assertRaisesRegex(RunnerError, "cases do not exactly match"):
-            self.runner().preflight(self.selection())
+        self.runner().preflight(self.selection())
 
-    def test_prepare_holdout_plan_writes_private_preflighted_plan_without_models(
+    def test_prepare_holdout_plan_when_inputs_are_valid_writes_private_bound_plan(
         self,
     ) -> None:
+        # Arrange
         self.provider.executable_sha256 = "f" * 64
         runner = self.production_runner()
         output = self.fixture.root / "prepared-holdout.json"
+        # Act
         result = runner.prepare_holdout_plan(
             output_path=output,
             plan_id="prepared-holdout-v1",
@@ -5451,6 +5427,7 @@ class HoldoutReleaseProtocolTests(unittest.TestCase):
             seal_record="review:seal:prepared-holdout-v1",
         )
 
+        # Assert
         self.assertTrue(result["binding_verified"])
         self.assertEqual(result["plan_path"], str(output.resolve()))
         self.assertEqual(stat.S_IMODE(output.stat().st_mode), 0o600)
@@ -5458,7 +5435,7 @@ class HoldoutReleaseProtocolTests(unittest.TestCase):
             hashlib.sha256(output.read_bytes()).hexdigest(), result["plan_sha256"]
         )
         plan = load_holdout_plan(output)
-        self.assertEqual(plan.schema_version, 3)
+        self.assertEqual(json.loads(output.read_text())["schema_version"], 1)
         bindings = {binding.variant_id: binding for binding in plan.source_bindings}
         self.assertEqual(
             bindings["candidate"].source_commit, self.fixture.treatment_commit
@@ -5553,9 +5530,10 @@ class HoldoutReleaseProtocolTests(unittest.TestCase):
         self.assertEqual(self.provider.agent_requests, [])
         self.assertEqual(self.provider.comparator_requests, [])
 
-    def test_schema_v5_prepares_generic_source_bindings_without_reserved_ids(
+    def test_prepare_holdout_plan_when_variant_ids_are_generic_binds_all_sources(
         self,
     ) -> None:
+        # Arrange
         external_worktree = self.fixture.root / "external-treatment"
         subprocess.run(
             [
@@ -5611,13 +5589,6 @@ class HoldoutReleaseProtocolTests(unittest.TestCase):
             ],
             check=True,
         )
-        self.fixture.manifest["schema_version"] = 5
-        self.fixture.manifest["evaluation_mode"] = "judged"
-        self.fixture.manifest["comparator_profile"] = {
-            "kind": "builtin",
-            "id": "software-engineering-v2.3",
-        }
-        self.fixture.manifest["shared_verifier_dir"] = None
         variant_ids = {
             "no-skill": "blank",
             "original": "reference",
@@ -5644,6 +5615,7 @@ class HoldoutReleaseProtocolTests(unittest.TestCase):
         runner = self.production_runner(self.runner(suite, production=False))
         output = self.fixture.root / "generic-source-plan.json"
 
+        # Act
         result = runner.prepare_holdout_plan(
             output_path=output,
             plan_id="generic-source-v1",
@@ -5656,7 +5628,8 @@ class HoldoutReleaseProtocolTests(unittest.TestCase):
             (HARNESS_ROOT / "holdout-plan.schema.json").read_text(encoding="utf-8")
         )
 
-        self.assertEqual(plan.schema_version, 3)
+        # Assert
+        self.assertEqual(json.loads(output.read_text())["schema_version"], 1)
         self.assertFalse(
             list(
                 Draft202012Validator(schema).iter_errors(
@@ -5686,24 +5659,15 @@ class HoldoutReleaseProtocolTests(unittest.TestCase):
                 bindings["treatment"]["source_sha256_by_case"][case.id],
             )
 
-    def test_schema_v6_seals_reviewed_adapter_authority_in_plan_v4(self) -> None:
-        self.fixture.manifest["schema_version"] = 6
-        self.fixture.manifest["evaluation_mode"] = "judged"
-        self.fixture.manifest["comparator_profile"] = {
-            "kind": "builtin",
-            "id": "software-engineering-v2.3",
-        }
-        self.fixture.manifest["shared_verifier_dir"] = None
-        self.fixture.manifest["holdout"] = {"comparison_ids": list(self.comparison_ids)}
-        self.fixture._use_adapter(self.fixture.manifest["provider"])
-        self.fixture._use_adapter(self.fixture.manifest["comparator"])
-        for case in self.fixture.manifest["cases"]:
-            case["bundle_source"] = f"skills/{case['skill']}"
-        self.fixture.save_manifest()
+    def test_prepare_holdout_plan_when_adapters_are_current_seals_authority(
+        self,
+    ) -> None:
+        # Arrange
         suite = load_suite(self.fixture.manifest_path)
         runner = self.production_runner(self.runner(suite, production=False))
         output = self.fixture.root / "provider-authority-plan.json"
 
+        # Act
         runner.prepare_holdout_plan(
             output_path=output,
             plan_id="provider-authority-v1",
@@ -5712,7 +5676,9 @@ class HoldoutReleaseProtocolTests(unittest.TestCase):
             seal_record="review:seal:provider-authority-v1",
         )
         plan = load_holdout_plan(output)
-        self.assertEqual(plan.schema_version, 4)
+
+        # Assert
+        self.assertEqual(json.loads(output.read_text())["schema_version"], 1)
         self.assertEqual(
             plan.generator_adapter_binding.as_json(),
             runner._agent_authority_binding,
@@ -5731,21 +5697,15 @@ class HoldoutReleaseProtocolTests(unittest.TestCase):
         payload = json.loads(output.read_text(encoding="utf-8"))
         self.assertFalse(list(Draft202012Validator(schema).iter_errors(payload)))
 
-        legacy = copy.deepcopy(payload)
-        legacy["schema_version"] = 3
-        legacy.pop("generator_adapter_binding")
-        legacy.pop("comparator_adapter_binding")
-        legacy_path = self.fixture.save_holdout_plan(
-            legacy, name="provider-authority-legacy-plan.json"
+        unsupported = copy.deepcopy(payload)
+        unsupported["schema_version"] = 3
+        unsupported.pop("generator_adapter_binding")
+        unsupported.pop("comparator_adapter_binding")
+        unsupported_path = self.fixture.save_holdout_plan(
+            unsupported, name="provider-authority-unsupported-plan.json"
         )
-        with self.assertRaisesRegex(RunnerError, "schema-v4 provider authority"):
-            runner.preflight(
-                RunSelection(
-                    split="holdout",
-                    comparison_ids=self.comparison_ids,
-                    holdout_plan=legacy_path,
-                )
-            )
+        with self.assertRaisesRegex(HoldoutPlanError, "schema_version must be 1"):
+            load_holdout_plan(unsupported_path)
 
         drifted = copy.deepcopy(payload)
         drifted["generator_adapter_binding"]["capability_sha256"] = "f" * 64
@@ -5761,16 +5721,10 @@ class HoldoutReleaseProtocolTests(unittest.TestCase):
                 )
             )
 
-    def test_schema_v6_rejects_injected_production_comparator_authority(self) -> None:
-        self.fixture.manifest["schema_version"] = 6
-        self.fixture.manifest["evaluation_mode"] = "judged"
-        self.fixture.manifest["comparator_profile"] = {
-            "kind": "builtin",
-            "id": "software-engineering-v2.3",
-        }
-        self.fixture.manifest["shared_verifier_dir"] = None
-        self.fixture.manifest["holdout"] = {"comparison_ids": list(self.comparison_ids)}
-        self.fixture._use_adapter(self.fixture.manifest["provider"])
+    def test_prepare_holdout_plan_when_comparator_is_injected_rejects_authority(
+        self,
+    ) -> None:
+        # Arrange
         self.fixture.manifest["comparator"] = {
             "adapter": "claude-cli",
             "executable": str(self.fixture.fake_codex),
@@ -5789,6 +5743,7 @@ class HoldoutReleaseProtocolTests(unittest.TestCase):
         )
         output = self.fixture.root / "injected-comparator-plan.json"
 
+        # Act + Assert
         with self.assertRaisesRegex(
             RunnerError, "exact built-in Claude CLI comparator"
         ):
@@ -5805,21 +5760,10 @@ class HoldoutReleaseProtocolTests(unittest.TestCase):
         self.assertEqual(injected_comparator.comparator_requests, [])
         self.assertFalse(output.exists())
 
-    def test_schema_v6_rejects_provider_authority_drift_before_dispatch(self) -> None:
-        self.fixture.manifest["schema_version"] = 6
-        self.fixture.manifest["evaluation_mode"] = "judged"
-        self.fixture.manifest["comparator_profile"] = {
-            "kind": "builtin",
-            "id": "software-engineering-v2.3",
-        }
-        self.fixture.manifest["shared_verifier_dir"] = None
-        self.fixture.manifest["holdout"] = {"comparison_ids": list(self.comparison_ids)}
-        self.fixture._use_adapter(self.fixture.manifest["provider"])
-        self.fixture._use_adapter(self.fixture.manifest["comparator"])
-        for case in self.fixture.manifest["cases"]:
-            case["bundle_source"] = f"skills/{case['skill']}"
-        self.fixture.save_manifest()
-
+    def test_preflight_when_provider_authority_drifts_rejects_before_dispatch(
+        self,
+    ) -> None:
+        # Arrange
         mutations = (
             (
                 "generator config",
@@ -5857,6 +5801,7 @@ class HoldoutReleaseProtocolTests(unittest.TestCase):
                 ),
             ),
         )
+        # Act + Assert
         for label, expected, mutate in mutations:
             with self.subTest(label=label):
                 suite = load_suite(self.fixture.manifest_path)
@@ -5874,8 +5819,11 @@ class HoldoutReleaseProtocolTests(unittest.TestCase):
                 self.assertEqual(generator.agent_requests, [])
                 self.assertEqual(comparator.comparator_requests, [])
 
-    def test_schema_v5_objective_holdout_seals_policy_without_comparator(self) -> None:
-        suite = self.objective_v5_suite()
+    def test_prepare_holdout_plan_when_objective_seals_policy_without_comparator(
+        self,
+    ) -> None:
+        # Arrange
+        suite = self.objective_suite()
         runner = EvalRunner(suite)
         self.addCleanup(runner.close)
 
@@ -5889,6 +5837,7 @@ class HoldoutReleaseProtocolTests(unittest.TestCase):
         runner.agent_provider._agent_handler = treatment_only
         output = self.fixture.root / "objective-holdout-plan.json"
         result_dir = self.fixture.root / "objective-holdout-result"
+        # Act
         with (
             patch.object(
                 runner, "_assert_generator_release_authority", return_value=None
@@ -5916,6 +5865,8 @@ class HoldoutReleaseProtocolTests(unittest.TestCase):
             )
 
         plan = load_holdout_plan(output)
+
+        # Assert
         self.assertEqual(plan.evaluation_mode, "objective_only")
         self.assertIsNone(plan.comparator_release_sha256)
         self.assertEqual(
@@ -5936,11 +5887,13 @@ class HoldoutReleaseProtocolTests(unittest.TestCase):
             "comparator-spend", {path.name for path in result_dir.iterdir()}
         )
 
-    def test_generic_holdout_rejects_cross_authority_substitution(self) -> None:
-        suite = self.objective_v5_suite()
+    def test_run_when_holdout_authority_is_substituted_rejects_execution(self) -> None:
+        # Arrange
+        suite = self.objective_suite()
         runner = EvalRunner(suite)
         self.addCleanup(runner.close)
         output = self.fixture.root / "objective-authority-plan.json"
+        # Act + Assert
         with (
             patch.object(
                 runner, "_assert_generator_release_authority", return_value=None
@@ -6003,11 +5956,14 @@ class HoldoutReleaseProtocolTests(unittest.TestCase):
                         )
         self.assertEqual(runner.agent_provider.agent_requests, [])
 
-    def test_holdout_consumption_is_one_shot_across_roots_copies_and_crashes(
+    def test_run_when_holdout_plan_is_reused_or_crashes_enforces_one_shot_consumption(
         self,
     ) -> None:
+        # Arrange
         runner = self.runner()
         first_output = self.fixture.root / "consumed-result-a"
+
+        # Act + Assert
         with patch.object(
             runner,
             "_run_pair",
@@ -6019,6 +5975,7 @@ class HoldoutReleaseProtocolTests(unittest.TestCase):
                     output_dir=first_output,
                 )
 
+        # Assert
         record_path = Path(self.payload["consumption_record_path"])
         self.assertTrue(record_path.is_file())
         self.assertEqual(stat.S_IMODE(record_path.stat().st_mode), 0o600)
@@ -6027,11 +5984,21 @@ class HoldoutReleaseProtocolTests(unittest.TestCase):
             record["plan_sha256"], load_holdout_plan(self.plan_path).sha256
         )
         self.assertEqual(record["manifest_sha256"], self.suite.manifest_hash)
-        self.assertEqual(record["candidate_commit"], self.fixture.treatment_commit)
-        self.assertEqual(record["original_commit"], self.fixture.baseline_commit)
         self.assertEqual(record["result_root"], str(first_output.resolve()))
+        self.assertEqual(
+            set(record),
+            {
+                "manifest_sha256",
+                "plan_sha256",
+                "result_root",
+                "schema_version",
+            },
+        )
 
+        # Arrange
         second_output = self.fixture.root / "consumed-result-b"
+
+        # Act + Assert
         with self.assertRaisesRegex(RunnerError, "already been consumed"):
             self.runner().run(
                 self.selection(verifier_only=True),
@@ -6039,9 +6006,11 @@ class HoldoutReleaseProtocolTests(unittest.TestCase):
             )
         self.assertFalse(second_output.exists())
 
+        # Arrange
         copied_plan = self.fixture.root / "renamed-plan-copy.json"
         shutil.copyfile(self.plan_path, copied_plan)
         copied_plan.chmod(0o600)
+        # Act + Assert
         with self.assertRaisesRegex(RunnerError, "already been consumed"):
             self.runner().run(
                 self.selection(
@@ -6266,14 +6235,20 @@ class HoldoutReleaseProtocolTests(unittest.TestCase):
         self.assertEqual(self.provider.agent_requests, [])
         self.assertEqual(self.provider.comparator_requests, [])
 
-    def test_valid_holdout_dry_run_binds_plan_and_has_reachable_budgets(self) -> None:
+    def test_run_when_holdout_dry_run_is_valid_binds_plan_and_reachable_budgets(
+        self,
+    ) -> None:
+        # Arrange
         output = Path(self.temporary.name) / "must-not-exist"
+
+        # Act
         result = self.runner().run(
             self.selection(),
             output_dir=output,
             dry_run=True,
         )
 
+        # Assert
         self.assertFalse(output.exists())
         self.assertEqual(result["planned_pair_runs"], 96)
         preflight = result["preflight"]
@@ -6287,7 +6262,7 @@ class HoldoutReleaseProtocolTests(unittest.TestCase):
         )
         self.assertEqual(
             preflight["holdout_plan"]["provenance"]["assurance"],
-            "trusted-reviewed-attestation",
+            "operator-declared-review-records",
         )
         self.assertEqual(
             preflight["holdout_plan"]["comparator_release_sha256"],
@@ -6326,7 +6301,10 @@ class HoldoutReleaseProtocolTests(unittest.TestCase):
         self.assertEqual(self.provider.agent_requests, [])
         self.assertEqual(self.provider.comparator_requests, [])
 
-    def test_holdout_dry_run_rejects_first_unreachable_case_count(self) -> None:
+    def test_prepare_holdout_plan_when_case_count_is_unreachable_rejects_first_failure(
+        self,
+    ) -> None:
+        # Arrange
         extra_case = copy.deepcopy(self.fixture.manifest["cases"][0])
         case_root = "holdout/engineering/8"
         self.fixture._write_suite(
@@ -6346,30 +6324,27 @@ class HoldoutReleaseProtocolTests(unittest.TestCase):
         self.fixture.manifest["cases"].append(extra_case)
         self.fixture.save_manifest()
         suite = load_suite(self.fixture.manifest_path)
-        plan_payload = self.fixture.holdout_plan_payload()
-        plan_payload["comparator_release_sha256"] = self.payload[
-            "comparator_release_sha256"
-        ]
-        plan_payload["comparator_calibration_evidence_sha256"] = self.payload[
-            "comparator_calibration_evidence_sha256"
-        ]
-        plan_path = self.fixture.save_holdout_plan(
-            plan_payload, name="seventeen-case-plan.json"
-        )
-        runner = self.runner(suite)
-
+        output = self.fixture.root / "seventeen-case-plan.json"
+        # Act + Assert
         with self.assertRaisesRegex(
             RunnerError, "exceeds the per-comparison release cap"
         ):
-            runner.run(
-                self.selection(holdout_plan=plan_path),
-                output_dir=None,
-                dry_run=True,
+            self.runner(suite).prepare_holdout_plan(
+                output_path=output,
+                plan_id="seventeen-case-v1",
+                reviewers=("reviewer-a",),
+                freeze_record="review:freeze:seventeen-case-v1",
+                seal_record="review:seal:seventeen-case-v1",
             )
+        # Assert
+        self.assertFalse(output.exists())
         self.assertEqual(self.provider.agent_requests, [])
         self.assertEqual(self.provider.comparator_requests, [])
 
-    def test_holdout_plan_binding_rejects_each_bound_field(self) -> None:
+    def test_preflight_when_holdout_binding_changes_rejects_each_bound_field(
+        self,
+    ) -> None:
+        # Arrange
         cases, comparisons, sources, case_records = self.binding_inputs()
         mutations = {
             "manifest hash": lambda payload: payload.__setitem__(
@@ -6384,12 +6359,11 @@ class HoldoutReleaseProtocolTests(unittest.TestCase):
             "generator provider binding": lambda payload: payload[
                 "generator_provider"
             ].__setitem__("version", "stale-provider-version"),
-            "candidate commit": lambda payload: payload.__setitem__(
-                "candidate_commit", "1" * 40
-            ),
-            "original commit": lambda payload: payload.__setitem__(
-                "original_commit", "2" * 40
-            ),
+            "source bindings do not exactly match preflight": lambda payload: next(
+                binding
+                for binding in payload["source_bindings"]
+                if binding["variant_id"] == "candidate"
+            ).__setitem__("source_commit", "1" * 40),
             "seed": lambda payload: payload.__setitem__("seed", self.suite.seed + 1),
             "comparison profile": lambda payload: payload[
                 "comparison_profile"
@@ -6399,6 +6373,7 @@ class HoldoutReleaseProtocolTests(unittest.TestCase):
                 payload["cases"][0].__setitem__("case_tree_sha256", "f" * 64)
             ),
         }
+        # Act + Assert
         for message, mutate in mutations.items():
             with self.subTest(binding=message):
                 payload = copy.deepcopy(self.payload)
@@ -6416,7 +6391,10 @@ class HoldoutReleaseProtocolTests(unittest.TestCase):
                         case_records,
                     )
 
-    def test_production_holdout_requires_live_certification_evidence(self) -> None:
+    def test_bind_holdout_plan_when_live_certification_is_missing_rejects_plan(
+        self,
+    ) -> None:
+        # Arrange
         cases, comparisons, sources, case_records = self.binding_inputs()
         runner = self.runner()
         runtime = runner._load_comparator_runtime()
@@ -6426,10 +6404,12 @@ class HoldoutReleaseProtocolTests(unittest.TestCase):
             evidence_sha256=None,
         )
         invalid_runtime = replace(runtime, certification=invalid_certification)
+
+        # Act + Assert
         with patch.object(
             runner, "_load_comparator_runtime", return_value=invalid_runtime
         ):
-            with self.assertRaisesRegex(RunnerError, "valid live comparator"):
+            with self.assertRaisesRegex(RunnerError, "live calibration is invalid"):
                 runner._bind_holdout_plan(
                     self.selection(),
                     cases,
@@ -6438,7 +6418,16 @@ class HoldoutReleaseProtocolTests(unittest.TestCase):
                     case_records,
                 )
 
+    def test_bind_holdout_plan_when_external_release_bindings_are_invalid_rejects_plan(
+        self,
+    ) -> None:
+        # Arrange
+        cases, comparisons, sources, case_records = self.binding_inputs()
+        runner = self.runner()
+        runtime = runner._load_comparator_runtime()
         invalid_runtime = replace(runtime, external_bindings_validated=False)
+
+        # Act + Assert
         with patch.object(
             runner, "_load_comparator_runtime", return_value=invalid_runtime
         ):
@@ -6451,12 +6440,15 @@ class HoldoutReleaseProtocolTests(unittest.TestCase):
                     case_records,
                 )
 
-    def test_holdout_plan_requires_supported_sealed_provenance(self) -> None:
+    def test_load_holdout_plan_when_provenance_is_unsupported_rejects_plan(
+        self,
+    ) -> None:
+        # Arrange
         provenance_mutations = (
             (
                 "assurance",
                 "self-certified",
-                "supported value",
+                "must be 'operator-declared-review-records'",
             ),
             (
                 "privacy_claim",
@@ -6469,6 +6461,7 @@ class HoldoutReleaseProtocolTests(unittest.TestCase):
             ("freeze_record", "", "non-empty string"),
             ("seal_record", "", "non-empty string"),
         )
+        # Act + Assert
         for field, value, message in provenance_mutations:
             with self.subTest(field=field):
                 payload = copy.deepcopy(self.payload)
@@ -6584,12 +6577,15 @@ class HoldoutReleaseProtocolTests(unittest.TestCase):
         with self.assertRaisesRegex(RunnerError, "bytes drifted"):
             runner._assert_holdout_plan_integrity()
 
-    def test_holdout_aggregate_rejects_missing_duplicate_and_partial_cells(
+    def test_aggregate_when_holdout_matrix_or_authority_is_invalid_rejects_release(
         self,
     ) -> None:
+        # Arrange
         holdout_plan = load_holdout_plan(self.plan_path)
         selection = self.selection()
         valid_pairs = self.release_pairs()
+
+        # Act
         valid = _aggregate(
             valid_pairs,  # type: ignore[arg-type]
             self.suite,
@@ -6599,14 +6595,19 @@ class HoldoutReleaseProtocolTests(unittest.TestCase):
             release_authority_validated=True,
             generator_release_authoritative=True,
         )
+
+        # Assert
         self.assertTrue(valid["final_release_authorized"])
         self.assertTrue(valid["passed"])
 
+        # Arrange
         duplicated_cases = list(holdout_plan.cases)
         duplicated_cases[1] = replace(
             duplicated_cases[1],
             release_case_fingerprint=duplicated_cases[0].release_case_fingerprint,
         )
+
+        # Act
         pseudoreplicated = _aggregate(
             valid_pairs,  # type: ignore[arg-type]
             self.suite,
@@ -6616,6 +6617,8 @@ class HoldoutReleaseProtocolTests(unittest.TestCase):
             release_authority_validated=True,
             generator_release_authoritative=True,
         )
+
+        # Assert
         pseudoreplication_cell = pseudoreplicated["by_comparison_skill"][
             "candidate-vs-original"
         ]["engineering"]
@@ -6630,6 +6633,7 @@ class HoldoutReleaseProtocolTests(unittest.TestCase):
         )
         self.assertFalse(pseudoreplicated["final_release_authorized"])
 
+        # Act
         test_release = _aggregate(
             valid_pairs,  # type: ignore[arg-type]
             self.suite,
@@ -6638,14 +6642,17 @@ class HoldoutReleaseProtocolTests(unittest.TestCase):
             holdout_plan=holdout_plan,
             generator_release_authoritative=True,
         )
+
+        # Assert
         self.assertFalse(
             test_release["gates"]["holdout_release_protocol"][
-                "production_comparator_release_validated"
+                "production_judgment_authority_validated"
             ]
         )
         self.assertFalse(test_release["final_release_authorized"])
         self.assertFalse(test_release["passed"])
 
+        # Act + Assert
         for label, pairs in (
             ("missing", valid_pairs[:-1]),
             ("duplicate", [*valid_pairs, valid_pairs[0]]),
@@ -6668,6 +6675,7 @@ class HoldoutReleaseProtocolTests(unittest.TestCase):
                     aggregate["passed"], aggregate["final_release_authorized"]
                 )
 
+        # Arrange
         partial = copy.deepcopy(valid_pairs)
         losing_cases = {
             "engineering-0",
@@ -6680,6 +6688,8 @@ class HoldoutReleaseProtocolTests(unittest.TestCase):
                 and pair["repetition"] in {0, 1}
             ):
                 pair["final_winner"] = "control"
+
+        # Act
         aggregate = _aggregate(
             partial,  # type: ignore[arg-type]
             self.suite,
@@ -6689,6 +6699,8 @@ class HoldoutReleaseProtocolTests(unittest.TestCase):
             release_authority_validated=True,
             generator_release_authoritative=True,
         )
+
+        # Assert
         self.assertTrue(aggregate["gates"]["execution_matrix_integrity"]["passed"])
         self.assertFalse(
             aggregate["by_comparison_skill"]["candidate-vs-original"]["engineering"][
@@ -6720,15 +6732,20 @@ class ManifestValidationTests(unittest.TestCase):
         with self.assertRaisesRegex(ManifestError, "unknown keys"):
             load_suite(self.fixture.manifest_path)
 
-    def test_v3_judged_requires_explicit_profile_and_contract(self) -> None:
+    def test_load_suite_when_judged_fields_are_missing_rejects_manifest(self) -> None:
+        # Arrange
         schema = json.loads((HARNESS_ROOT / "suite.schema.json").read_text())
-        self.fixture.use_v3_judged()
+        self.fixture.use_judged()
         payload = copy.deepcopy(self.fixture.manifest)
-        self.assertEqual(list(Draft202012Validator(schema).iter_errors(payload)), [])
+
+        # Act
         suite = load_suite(self.fixture.manifest_path)
+
+        # Assert
+        self.assertEqual(list(Draft202012Validator(schema).iter_errors(payload)), [])
         self.assertEqual(suite.evaluation_mode, "judged")
         self.assertEqual(suite.comparator_profile.kind, "builtin")
-        self.assertEqual(suite.comparator_profile.id, "software-engineering-v2.3")
+        self.assertEqual(suite.comparator_profile.id, "software-engineering-v1")
 
         mutations = []
         missing_profile = copy.deepcopy(payload)
@@ -6750,12 +6767,17 @@ class ManifestValidationTests(unittest.TestCase):
                 with self.assertRaises(ManifestError):
                     load_suite(self.fixture.manifest_path)
 
-    def test_v3_objective_forbids_comparator_fields_and_contract(self) -> None:
+    def test_load_suite_when_objective_has_judged_fields_rejects_manifest(self) -> None:
+        # Arrange
         schema = json.loads((HARNESS_ROOT / "suite.schema.json").read_text())
-        self.fixture.use_v3_objective()
+        self.fixture.use_objective()
         payload = copy.deepcopy(self.fixture.manifest)
-        self.assertEqual(list(Draft202012Validator(schema).iter_errors(payload)), [])
+
+        # Act
         suite = load_suite(self.fixture.manifest_path)
+
+        # Assert
+        self.assertEqual(list(Draft202012Validator(schema).iter_errors(payload)), [])
         self.assertEqual(suite.evaluation_mode, "objective_only")
         self.assertIsNone(suite.comparator)
         self.assertIsNone(suite.comparator_profile)
@@ -6768,7 +6790,7 @@ class ManifestValidationTests(unittest.TestCase):
         profile = copy.deepcopy(payload)
         profile["comparator_profile"] = {
             "kind": "builtin",
-            "id": "software-engineering-v2.3",
+            "id": "software-engineering-v1",
         }
         mutations.append(profile)
         contract = copy.deepcopy(payload)
@@ -6786,12 +6808,19 @@ class ManifestValidationTests(unittest.TestCase):
                 with self.assertRaises(ManifestError):
                     load_suite(self.fixture.manifest_path)
 
-    def test_v6_selects_reviewed_provider_adapters_without_kind_fields(self) -> None:
+    def test_load_suite_when_adapters_are_reviewed_resolves_provider_capabilities(
+        self,
+    ) -> None:
+        # Arrange
         schema = json.loads((HARNESS_ROOT / "suite.schema.json").read_text())
-        self.fixture.use_v6_judged()
+        self.fixture.use_judged()
         payload = copy.deepcopy(self.fixture.manifest)
+
+        # Act
         self.assertFalse(list(Draft202012Validator(schema).iter_errors(payload)))
         suite = load_suite(self.fixture.manifest_path)
+
+        # Assert
         self.assertEqual(suite.provider.adapter_id, "deterministic-fake")
         self.assertEqual(suite.provider.kind, "fake")
         self.assertEqual(suite.comparator.adapter_id, "deterministic-fake")
@@ -6855,28 +6884,17 @@ class ManifestValidationTests(unittest.TestCase):
                 with self.assertRaises(ManifestError):
                     load_suite(self.fixture.manifest_path)
 
-        legacy_adapter = copy.deepcopy(payload)
-        legacy_adapter["schema_version"] = 5
-        with self.subTest(mutation="adapter in schema v5"):
-            self.assertTrue(
-                list(Draft202012Validator(schema).iter_errors(legacy_adapter))
-            )
-            self.fixture.manifest = legacy_adapter
-            self.fixture.save_manifest()
-            with self.assertRaises(ManifestError):
-                load_suite(self.fixture.manifest_path)
-
         self.fixture.manifest = self.fixture._manifest()
         self.fixture.save_manifest()
-        self.fixture.use_v6_objective()
+        self.fixture.use_objective()
         objective = load_suite(self.fixture.manifest_path)
         self.assertEqual(objective.provider.adapter_id, "deterministic-fake")
         self.assertIsNone(objective.comparator)
 
-    def test_v7_requires_explicit_case_artifact_contracts(self) -> None:
+    def test_load_suite_when_artifact_contract_varies_binds_declared_kind(self) -> None:
+        # Arrange
         schema = json.loads((HARNESS_ROOT / "suite.schema.json").read_text())
-        self.fixture.use_v6_objective()
-        self.fixture.manifest["schema_version"] = 7
+        self.fixture.use_objective()
         for index, case in enumerate(self.fixture.manifest["cases"]):
             case["artifact_contract"] = {
                 "kind": ("final_output_text", "final_output_json", "workspace_diff")[
@@ -6886,6 +6904,7 @@ class ManifestValidationTests(unittest.TestCase):
         self.fixture.save_manifest()
         payload = copy.deepcopy(self.fixture.manifest)
 
+        # Act
         self.assertFalse(list(Draft202012Validator(schema).iter_errors(payload)))
         for kind in ("final_output_text", "final_output_json", "workspace_diff"):
             candidate = copy.deepcopy(payload)
@@ -6901,9 +6920,7 @@ class ManifestValidationTests(unittest.TestCase):
         missing["cases"][0].pop("artifact_contract")
         unknown = copy.deepcopy(payload)
         unknown["cases"][0]["artifact_contract"]["kind"] = "claimed-by-suite"
-        legacy_with_contract = copy.deepcopy(payload)
-        legacy_with_contract["schema_version"] = 6
-        for mutation in (missing, unknown, legacy_with_contract):
+        for mutation in (missing, unknown):
             with self.subTest(mutation=mutation):
                 self.assertTrue(
                     list(Draft202012Validator(schema).iter_errors(mutation))
@@ -6913,69 +6930,55 @@ class ManifestValidationTests(unittest.TestCase):
                 with self.assertRaises(ManifestError):
                     load_suite(self.fixture.manifest_path)
 
-        self.fixture.manifest = self.fixture._manifest()
+        self.fixture.manifest = payload
         self.fixture.save_manifest()
-        raw_bytes = self.fixture.manifest_path.read_bytes()
-        legacy = load_suite(self.fixture.manifest_path)
-        self.assertEqual(legacy.raw_bytes, raw_bytes)
-        self.assertEqual(legacy.manifest_hash, hashlib.sha256(raw_bytes).hexdigest())
-        self.assertEqual(legacy.cases[0].artifact_contract.kind, "workspace_diff")
-        legacy_fingerprint = _release_case_fingerprint(
-            legacy.cases[0],
+        first_case = load_suite(self.fixture.manifest_path).cases[0]
+        second_case = replace(
+            first_case,
+            artifact_contract=replace(
+                first_case.artifact_contract,
+                kind="final_output_json",
+            ),
+        )
+        first_fingerprint = _release_case_fingerprint(
+            first_case,
             prompt_sha256="1" * 64,
             fixture_sha256="2" * 64,
             context_content_sha256s={},
         )
-        declared_case = replace(
-            legacy.cases[0],
-            artifact_contract=replace(
-                legacy.cases[0].artifact_contract,
-                declared=True,
-            ),
-        )
+
+        # Assert
         self.assertNotEqual(
-            legacy_fingerprint,
+            first_fingerprint,
             _release_case_fingerprint(
-                declared_case,
+                second_case,
                 prompt_sha256="1" * 64,
                 fixture_sha256="2" * 64,
                 context_content_sha256s={},
             ),
         )
 
-    def test_v4_requires_bundle_source_and_legacy_versions_derive_it(self) -> None:
+    def test_load_suite_when_bundle_source_is_declared_preserves_exact_path(
+        self,
+    ) -> None:
+        # Arrange
         schema = json.loads((HARNESS_ROOT / "suite.schema.json").read_text())
-        original_bytes = self.fixture.manifest_path.read_bytes()
-        legacy = load_suite(self.fixture.manifest_path)
-        self.assertEqual(legacy.raw_bytes, original_bytes)
-        self.assertEqual(
-            legacy.manifest_hash, hashlib.sha256(original_bytes).hexdigest()
-        )
-        self.assertEqual(legacy.cases[0].bundle_source.as_posix(), "skills/demo")
+        self.fixture.use_judged(bundle_source="instruction-bundles/demo")
+        judged_payload = copy.deepcopy(self.fixture.manifest)
 
-        self.fixture.use_v3_judged()
-        version_three_bytes = self.fixture.manifest_path.read_bytes()
-        version_three = load_suite(self.fixture.manifest_path)
-        self.assertEqual(version_three.raw_bytes, version_three_bytes)
+        # Act
         self.assertEqual(
-            version_three.manifest_hash,
-            hashlib.sha256(version_three_bytes).hexdigest(),
+            list(Draft202012Validator(schema).iter_errors(judged_payload)), []
         )
-        self.assertEqual(version_three.cases[0].bundle_source.as_posix(), "skills/demo")
-        self.assertNotIn("bundle_source", version_three.raw["cases"][0])
+        judged = load_suite(self.fixture.manifest_path)
 
-        self.fixture.use_v4_judged("instruction-bundles/demo")
-        version_four = copy.deepcopy(self.fixture.manifest)
+        # Assert
         self.assertEqual(
-            list(Draft202012Validator(schema).iter_errors(version_four)), []
-        )
-        parsed = load_suite(self.fixture.manifest_path)
-        self.assertEqual(
-            parsed.cases[0].bundle_source.as_posix(), "instruction-bundles/demo"
+            judged.cases[0].bundle_source.as_posix(), "instruction-bundles/demo"
         )
 
         self.fixture.manifest = self.fixture._manifest()
-        self.fixture.use_v4_objective("instruction-bundles/demo")
+        self.fixture.use_objective(bundle_source="instruction-bundles/demo")
         self.assertEqual(
             list(Draft202012Validator(schema).iter_errors(self.fixture.manifest)), []
         )
@@ -6984,25 +6987,18 @@ class ManifestValidationTests(unittest.TestCase):
             "instruction-bundles/demo",
         )
 
-    def test_bundle_source_schema_and_parser_reject_version_and_path_mutations(
+    def test_load_suite_when_bundle_source_is_invalid_rejects_manifest(
         self,
     ) -> None:
+        # Arrange
         schema = json.loads((HARNESS_ROOT / "suite.schema.json").read_text())
-        self.fixture.use_v4_judged("instruction-bundles/demo")
+        self.fixture.use_judged(bundle_source="instruction-bundles/demo")
         valid = copy.deepcopy(self.fixture.manifest)
         mutations: list[dict[str, object]] = []
 
         missing = copy.deepcopy(valid)
         del missing["cases"][0]["bundle_source"]
         mutations.append(missing)
-
-        for version in (2, 3):
-            legacy = copy.deepcopy(valid)
-            legacy["schema_version"] = version
-            if version == 2:
-                legacy.pop("evaluation_mode", None)
-                legacy.pop("comparator_profile", None)
-            mutations.append(legacy)
 
         for value in (
             "/absolute",
@@ -7020,6 +7016,7 @@ class ManifestValidationTests(unittest.TestCase):
             mutation["cases"][0]["bundle_source"] = value
             mutations.append(mutation)
 
+        # Act + Assert
         for mutation in mutations:
             with self.subTest(mutation=mutation):
                 self.assertTrue(
@@ -7030,9 +7027,10 @@ class ManifestValidationTests(unittest.TestCase):
                 with self.assertRaises(ManifestError):
                     load_suite(self.fixture.manifest_path)
 
-    def test_v4_preserves_judged_and_objective_mode_exclusivity(self) -> None:
+    def test_load_suite_when_mode_fields_conflict_rejects_manifest(self) -> None:
+        # Arrange
         schema = json.loads((HARNESS_ROOT / "suite.schema.json").read_text())
-        self.fixture.use_v4_judged()
+        self.fixture.use_judged()
         judged = copy.deepcopy(self.fixture.manifest)
         judged_mutations: list[dict[str, object]] = []
         for field in ("comparator", "comparator_profile"):
@@ -7044,7 +7042,7 @@ class ManifestValidationTests(unittest.TestCase):
         judged_mutations.append(missing_contract)
 
         self.fixture.manifest = self.fixture._manifest()
-        self.fixture.use_v4_objective()
+        self.fixture.use_objective()
         objective = copy.deepcopy(self.fixture.manifest)
         objective_mutations: list[dict[str, object]] = []
         for field in ("comparator", "comparator_profile"):
@@ -7054,7 +7052,7 @@ class ManifestValidationTests(unittest.TestCase):
             else:
                 mutation[field] = {
                     "kind": "builtin",
-                    "id": "software-engineering-v2.3",
+                    "id": "software-engineering-v1",
                 }
             objective_mutations.append(mutation)
         unexpected_contract = copy.deepcopy(objective)
@@ -7063,6 +7061,7 @@ class ManifestValidationTests(unittest.TestCase):
         )
         objective_mutations.append(unexpected_contract)
 
+        # Act + Assert
         for mutation in (*judged_mutations, *objective_mutations):
             with self.subTest(mutation=mutation):
                 self.assertTrue(
@@ -7073,9 +7072,12 @@ class ManifestValidationTests(unittest.TestCase):
                 with self.assertRaises(ManifestError):
                     load_suite(self.fixture.manifest_path)
 
-    def test_v5_declares_canonical_release_comparison_ids(self) -> None:
+    def test_load_suite_when_holdout_comparisons_are_declared_preserves_order(
+        self,
+    ) -> None:
+        # Arrange
         schema = json.loads((HARNESS_ROOT / "suite.schema.json").read_text())
-        self.fixture.use_v5_objective(("release-alpha", "release-beta"))
+        self.fixture.use_objective(comparison_ids=("release-alpha", "release-beta"))
         self.fixture.manifest["variants"] = [
             {"id": "empty-arm", "kind": "without_skill"},
             {
@@ -7116,8 +7118,11 @@ class ManifestValidationTests(unittest.TestCase):
         ]
         self.fixture.save_manifest()
         valid = copy.deepcopy(self.fixture.manifest)
-        self.assertEqual(list(Draft202012Validator(schema).iter_errors(valid)), [])
+        # Act
         suite = load_suite(self.fixture.manifest_path)
+
+        # Assert
+        self.assertEqual(list(Draft202012Validator(schema).iter_errors(valid)), [])
         self.assertEqual(
             suite.holdout_comparison_ids, ("release-alpha", "release-beta")
         )
@@ -7167,59 +7172,49 @@ class ManifestValidationTests(unittest.TestCase):
                 with self.assertRaises(ManifestError):
                     load_suite(self.fixture.manifest_path)
 
-        for version in (2, 3, 4):
-            self.fixture.manifest = self.fixture._manifest()
-            if version == 3:
-                self.fixture.use_v3_judged()
-            elif version == 4:
-                self.fixture.use_v4_judged()
-            self.fixture.manifest["holdout"] = {"comparison_ids": ["without-current"]}
-            self.fixture.save_manifest()
-            with self.subTest(legacy_version=version):
-                self.assertTrue(
-                    list(
-                        Draft202012Validator(schema).iter_errors(self.fixture.manifest)
-                    )
-                )
-                with self.assertRaises(ManifestError):
-                    load_suite(self.fixture.manifest_path)
-
         self.fixture.manifest = self.fixture._manifest()
-        self.fixture.use_v5_judged(("without-current",))
+        self.fixture.use_judged(comparison_ids=("without-current",))
         self.assertEqual(
             load_suite(self.fixture.manifest_path).holdout_comparison_ids,
             ("without-current",),
         )
 
-    def test_shared_verifier_dir_versions_null_and_configured(self) -> None:
+    def test_load_suite_when_schema_version_is_not_current_rejects_manifest(
+        self,
+    ) -> None:
+        # Arrange
         schema = json.loads((HARNESS_ROOT / "suite.schema.json").read_text())
-        self.assertIsNone(load_suite(self.fixture.manifest_path).shared_verifier_dir)
+        valid = copy.deepcopy(self.fixture.manifest)
 
-        self.fixture.use_v3_judged()
-        version_three_bytes = self.fixture.manifest_path.read_bytes()
-        version_three = load_suite(self.fixture.manifest_path)
-        self.assertIsNone(version_three.shared_verifier_dir)
-        self.assertEqual(version_three.raw_bytes, version_three_bytes)
+        # Act + Assert
+        for version in (2, 3, 4, 5, 6, 8):
+            with self.subTest(version=version):
+                candidate = copy.deepcopy(valid)
+                candidate["schema_version"] = version
+                self.assertTrue(
+                    list(Draft202012Validator(schema).iter_errors(candidate))
+                )
+                self.fixture.manifest = candidate
+                self.fixture.save_manifest()
+                with self.assertRaisesRegex(ManifestError, "schema_version must be 1"):
+                    load_suite(self.fixture.manifest_path)
 
-        self.fixture.manifest = self.fixture._manifest()
-        self.fixture.isolate_basic_case()
-        self.fixture._write_suite(
-            "cases/testing/_shared/helper.py", "LEGACY_SHARED = 1\n"
-        )
-        legacy_bytes = self.fixture.manifest_path.read_bytes()
-        legacy_shared = load_suite(self.fixture.manifest_path)
-        self.assertEqual(legacy_shared.raw_bytes, legacy_bytes)
-        self.assertEqual(
-            legacy_shared.shared_verifier_dir,
-            self.fixture.suite_root / "cases/testing/_shared",
-        )
-
-        self.fixture.use_v4_objective()
+    def test_load_suite_when_shared_verifier_is_null_or_configured_preserves_choice(
+        self,
+    ) -> None:
+        # Arrange
+        schema = json.loads((HARNESS_ROOT / "suite.schema.json").read_text())
+        self.fixture.use_objective()
         null_payload = copy.deepcopy(self.fixture.manifest)
+
+        # Act
         self.assertEqual(
             list(Draft202012Validator(schema).iter_errors(null_payload)), []
         )
-        self.assertIsNone(load_suite(self.fixture.manifest_path).shared_verifier_dir)
+        null_suite = load_suite(self.fixture.manifest_path)
+
+        # Assert
+        self.assertIsNone(null_suite.shared_verifier_dir)
 
         missing = copy.deepcopy(null_payload)
         del missing["shared_verifier_dir"]
@@ -7229,25 +7224,12 @@ class ManifestValidationTests(unittest.TestCase):
         with self.assertRaises(ManifestError):
             load_suite(self.fixture.manifest_path)
 
-        for version in (2, 3):
-            legacy = self.fixture._manifest()
-            if version == 3:
-                self.fixture.manifest = legacy
-                self.fixture.use_v3_judged()
-                legacy = copy.deepcopy(self.fixture.manifest)
-            legacy["shared_verifier_dir"] = None
-            self.assertTrue(list(Draft202012Validator(schema).iter_errors(legacy)))
-            self.fixture.manifest = legacy
-            self.fixture.save_manifest()
-            with self.assertRaises(ManifestError):
-                load_suite(self.fixture.manifest_path)
-
         self.fixture.manifest = self.fixture._manifest()
         self.fixture.isolate_basic_case()
         self.fixture._write_suite(
             "verifier-resources/shared/helper.py", "SHARED_VALUE = 1\n"
         )
-        self.fixture.use_v4_objective()
+        self.fixture.use_objective()
         self.fixture.manifest["shared_verifier_dir"] = "verifier-resources/shared"
         self.fixture.save_manifest()
         configured_payload = copy.deepcopy(self.fixture.manifest)
@@ -7259,11 +7241,14 @@ class ManifestValidationTests(unittest.TestCase):
             self.fixture.suite_root / "verifier-resources/shared",
         )
 
-    def test_shared_verifier_dir_rejects_invalid_symlink_and_overlap(self) -> None:
+    def test_load_suite_when_shared_verifier_is_symlinked_or_overlapping_rejects_manifest(
+        self,
+    ) -> None:
+        # Arrange
         schema = json.loads((HARNESS_ROOT / "suite.schema.json").read_text())
         self.fixture.isolate_basic_case()
         self.fixture._write_suite("verifier-resources/shared/helper.py", "value = 1\n")
-        self.fixture.use_v4_objective()
+        self.fixture.use_objective()
         valid = copy.deepcopy(self.fixture.manifest)
         invalid_values = (
             "",
@@ -7277,6 +7262,7 @@ class ManifestValidationTests(unittest.TestCase):
             "control\n",
             "surrogate\ud800",
         )
+        # Act + Assert
         for value in invalid_values:
             mutation = copy.deepcopy(valid)
             mutation["shared_verifier_dir"] = value
@@ -7315,53 +7301,19 @@ class ManifestValidationTests(unittest.TestCase):
         with self.assertRaisesRegex(ManifestError, "overlaps case basic"):
             load_suite(self.fixture.manifest_path)
 
-    def test_legacy_shared_verifier_dir_fails_closed_on_symlinks(self) -> None:
-        external = self.fixture.root / "external-legacy-shared"
-        external.mkdir()
-        shared = self.fixture.suite_root / "cases/testing/_shared"
-        shared.parent.mkdir(parents=True)
-        shared.symlink_to(external, target_is_directory=True)
-
-        for version in (2, 3):
-            self.fixture.manifest = self.fixture._manifest()
-            if version == 3:
-                self.fixture.use_v3_judged()
-            else:
-                self.fixture.save_manifest()
-            with self.subTest(version=version, link="leaf"):
-                with self.assertRaisesRegex(
-                    ManifestError, "must not traverse a symlink"
-                ):
-                    load_suite(self.fixture.manifest_path)
-
-        shared.unlink()
-        shutil.rmtree(self.fixture.suite_root / "cases")
-        external_cases = self.fixture.root / "external-cases"
-        external_cases.joinpath("testing/_shared").mkdir(parents=True)
-        (self.fixture.suite_root / "cases").symlink_to(
-            external_cases, target_is_directory=True
-        )
-        for version in (2, 3):
-            self.fixture.manifest = self.fixture._manifest()
-            if version == 3:
-                self.fixture.use_v3_judged()
-            else:
-                self.fixture.save_manifest()
-            with self.subTest(version=version, link="ancestor"):
-                with self.assertRaisesRegex(
-                    ManifestError, "must not traverse a symlink"
-                ):
-                    load_suite(self.fixture.manifest_path)
-
-    def test_shared_verifier_dir_rejects_bundle_and_context_overlap(self) -> None:
+    def test_load_suite_when_shared_verifier_overlaps_bundle_or_context_rejects_manifest(
+        self,
+    ) -> None:
+        # Arrange
         self.fixture.isolate_basic_case()
         self.fixture._write_suite("verifier-resources/shared/helper.py", "VALUE = 1\n")
         self.fixture._write_suite(
             "verifier-resources/SKILL.md", "# Verifier resources must stay private\n"
         )
-        self.fixture.use_v4_objective("eval-suite/verifier-resources")
+        self.fixture.use_objective(bundle_source="eval-suite/verifier-resources")
         self.fixture.manifest["shared_verifier_dir"] = "verifier-resources/shared"
         self.fixture.save_manifest()
+        # Act + Assert
         with self.assertRaisesRegex(ManifestError, "overlaps case basic"):
             load_suite(self.fixture.manifest_path)
 
@@ -7373,10 +7325,18 @@ class ManifestValidationTests(unittest.TestCase):
         with self.assertRaisesRegex(ManifestError, "overlaps case basic"):
             load_suite(self.fixture.manifest_path)
 
-    def test_suite_local_profile_is_contained_and_never_authoritative(self) -> None:
+    def test_load_suite_when_profile_is_suite_local_contains_non_authoritative_runtime(
+        self,
+    ) -> None:
+        # Arrange
         self.fixture.create_data_profile("profiles/local")
-        self.fixture.use_v3_judged({"kind": "suite_local", "path": "profiles/local"})
+        self.fixture.use_judged(
+            profile={"kind": "suite_local", "path": "profiles/local"}
+        )
+        # Act
         suite = load_suite(self.fixture.manifest_path)
+
+        # Assert
         self.assertEqual(suite.comparator_profile.kind, "suite_local")
         self.assertIsNone(suite.comparator_profile.resources.authority_binding)
         self.assertNotIn(
@@ -7387,57 +7347,80 @@ class ManifestValidationTests(unittest.TestCase):
             (self.fixture.suite_root / "profiles/local/calibration.py").exists()
         )
         provider = self.fixture.provider()
+
+        # Act
         with EvalRunner(suite, provider, provider) as runner:
             preflight = runner.preflight(
                 RunSelection(comparison_ids=("without-current",))
             )
+        # Assert
         self.assertEqual(
             preflight["comparator"]["profile_id"],
-            "suite-local-software-v2.3",
+            "suite-local-software-v1",
         )
         self.assertEqual(preflight["comparator"]["profile_kind"], "suite_local")
         self.assertIsNone(preflight["comparator"]["profile_authority_registry_sha256"])
         self.assertTrue(preflight["comparator"]["profile_locks_valid"])
         self.assertFalse(preflight["comparator"]["protocol_locks_valid"])
 
-    def test_suite_local_profile_rejects_escape_symlink_and_drift(self) -> None:
+    def test_load_suite_when_local_profile_escapes_or_drifts_rejects_manifest(
+        self,
+    ) -> None:
+        # Arrange
         outside = self.fixture.create_data_profile("../outside-profile")
         link = self.fixture.suite_root / "linked-profile"
         link.symlink_to(outside, target_is_directory=True)
+        # Act + Assert
         for path, message in (
             ("../outside-profile", "canonical suite-relative"),
             ("linked-profile", "must not traverse a symlink"),
         ):
             with self.subTest(path=path):
                 self.fixture.manifest = self.fixture._manifest()
-                self.fixture.use_v3_judged({"kind": "suite_local", "path": path})
+                self.fixture.use_judged(profile={"kind": "suite_local", "path": path})
                 with self.assertRaisesRegex(ManifestError, message):
                     load_suite(self.fixture.manifest_path)
 
+        # Arrange
         local_profile = self.fixture.create_data_profile("profiles/drifted")
         manifest = local_profile / "manifest.json"
         manifest_payload = json.loads(manifest.read_text(encoding="utf-8"))
         manifest_payload["_drift"] = True
         manifest.write_text(json.dumps(manifest_payload), encoding="utf-8")
         self.fixture.manifest = self.fixture._manifest()
-        self.fixture.use_v3_judged({"kind": "suite_local", "path": "profiles/drifted"})
+        self.fixture.use_judged(
+            profile={"kind": "suite_local", "path": "profiles/drifted"}
+        )
+        # Act + Assert
         with self.assertRaisesRegex(ManifestError, "invalid comparator profile"):
             load_suite(self.fixture.manifest_path)
 
-    def test_suite_local_profile_cannot_shadow_builtin_identity(self) -> None:
+    def test_load_suite_when_local_profile_shadows_builtin_identity_rejects_manifest(
+        self,
+    ) -> None:
+        # Arrange
         self.fixture.create_data_profile(
-            "profiles/shadow", profile_id="software-engineering-v2.3"
+            "profiles/shadow", profile_id="software-engineering-v1"
         )
-        self.fixture.use_v3_judged({"kind": "suite_local", "path": "profiles/shadow"})
+        self.fixture.use_judged(
+            profile={"kind": "suite_local", "path": "profiles/shadow"}
+        )
+        # Act + Assert
         with self.assertRaisesRegex(ManifestError, "must not shadow a built-in id"):
             load_suite(self.fixture.manifest_path)
 
-    def test_suite_local_profile_cannot_prepare_holdout(self) -> None:
+    def test_prepare_holdout_plan_when_profile_is_suite_local_rejects_authority(
+        self,
+    ) -> None:
+        # Arrange
         self.fixture.create_data_profile("profiles/local")
-        self.fixture.use_v3_judged({"kind": "suite_local", "path": "profiles/local"})
+        self.fixture.use_judged(
+            profile={"kind": "suite_local", "path": "profiles/local"}
+        )
         self.fixture.configure_holdout(skills=("demo",))
         suite = load_suite(self.fixture.manifest_path)
         provider = self.fixture.provider()
+        # Act + Assert
         with EvalRunner(suite, provider, provider) as runner:
             with self.assertRaisesRegex(
                 RunnerError, "authority-bound comparator profile"
@@ -7449,17 +7432,22 @@ class ManifestValidationTests(unittest.TestCase):
                     freeze_record="freeze-record",
                     seal_record="seal-record",
                 )
+        # Assert
         self.assertFalse((self.fixture.root / "local-holdout.json").exists())
 
-    def test_test_authority_profile_cannot_access_holdout(self) -> None:
-        self.fixture.use_v3_judged(
-            {"kind": "builtin", "id": "plain-language-revision-v1"}
+    def test_prepare_holdout_plan_when_profile_has_test_authority_rejects_access(
+        self,
+    ) -> None:
+        # Arrange
+        self.fixture.use_judged(
+            profile={"kind": "builtin", "id": "plain-language-revision-v1"}
         )
         self.fixture.configure_holdout(skills=("demo",))
         self.fixture.align_builtin_profile_authority()
         suite = load_suite(self.fixture.manifest_path)
         provider = self.fixture.provider()
         output = self.fixture.root / "test-authority-holdout.json"
+        # Act + Assert
         with EvalRunner(suite, provider, provider) as runner:
             with self.assertRaisesRegex(
                 RunnerError, "not authorized for production holdouts"
@@ -7471,6 +7459,7 @@ class ManifestValidationTests(unittest.TestCase):
                     freeze_record="freeze-record",
                     seal_record="seal-record",
                 )
+        # Assert
         self.assertFalse(output.exists())
         self.assertEqual(provider.agent_requests, [])
         self.assertEqual(provider.comparator_requests, [])
@@ -7599,9 +7588,15 @@ class ManifestValidationTests(unittest.TestCase):
                 RunSelection(split="holdout", comparison_ids=("without-current",))
             )
 
-    def test_cli_defaults_to_train_and_exposes_bounded_filters(self) -> None:
-        default = build_parser().parse_args([])
-        selected = build_parser().parse_args(
+    def test_cli_when_filters_are_parsed_defaults_to_train_and_bounds_selection(
+        self,
+    ) -> None:
+        # Arrange
+        parser = build_parser()
+
+        # Act
+        default = parser.parse_args([])
+        selected = parser.parse_args(
             [
                 "--split",
                 "validation",
@@ -7611,19 +7606,21 @@ class ManifestValidationTests(unittest.TestCase):
                 "comparison-a",
             ]
         )
+        holdout = parser.parse_args(
+            ["--split", "holdout", "--holdout-plan", "/tmp/holdout-plan.json"]
+        )
+        public = parser.parse_args(["--split", "public"])
+
+        # Assert
         self.assertEqual(default.split, "train")
         self.assertEqual(selected.split, "validation")
         self.assertEqual(selected.case, ["case-a"])
         self.assertEqual(selected.comparison, ["comparison-a"])
-        holdout = build_parser().parse_args(
-            ["--split", "holdout", "--holdout-plan", "/tmp/holdout-plan.json"]
-        )
         self.assertEqual(holdout.holdout_plan, Path("/tmp/holdout-plan.json"))
-        public = build_parser().parse_args(["--split", "public"])
         self.assertEqual(public.split, "public")
 
 
-class SchemaV3RunnerTests(unittest.TestCase):
+class EvaluationModeRunnerTests(unittest.TestCase):
     def setUp(self) -> None:
         test_root = Path.home() / ".cache" / "skill-eval-tests"
         test_root.mkdir(parents=True, exist_ok=True)
@@ -7631,18 +7628,23 @@ class SchemaV3RunnerTests(unittest.TestCase):
         self.addCleanup(self.temporary.cleanup)
         self.fixture = SuiteFixture(Path(self.temporary.name))
 
-    def test_builtin_profile_runtime_is_selected_by_id(self) -> None:
-        self.fixture.use_v3_judged()
+    def test_preflight_when_builtin_profile_id_is_selected_uses_matching_runtime(
+        self,
+    ) -> None:
+        # Arrange
+        self.fixture.use_judged()
         self.fixture.align_builtin_profile_authority()
         suite = load_suite(self.fixture.manifest_path)
         provider = self.fixture.provider()
+        # Act
         with EvalRunner(suite, provider, provider) as runner:
             preflight = runner.preflight(
                 RunSelection(comparison_ids=("without-current",))
             )
+        # Assert
         comparator = preflight["comparator"]
         self.assertEqual(comparator["profile_kind"], "builtin")
-        self.assertEqual(comparator["profile_id"], "software-engineering-v2.3")
+        self.assertEqual(comparator["profile_id"], "software-engineering-v1")
         self.assertRegex(comparator["profile_descriptor_sha256"], r"^[0-9a-f]{64}$")
         self.assertRegex(
             comparator["profile_authority_registry_sha256"], r"^[0-9a-f]{64}$"
@@ -7650,14 +7652,17 @@ class SchemaV3RunnerTests(unittest.TestCase):
         self.assertTrue(comparator["profile_locks_valid"])
         self.assertTrue(comparator["protocol_locks_valid"])
 
-    def test_plain_language_profile_executes_non_engineering_judgment(self) -> None:
+    def test_run_when_profile_is_plain_language_executes_non_engineering_judgment(
+        self,
+    ) -> None:
+        # Arrange
         self.fixture.create_data_profile(
             "profiles/plain-language",
             profile_id="suite-local-plain-language-v1",
             source_directory="plain_language_calibration",
         )
-        self.fixture.use_v3_judged(
-            {"kind": "suite_local", "path": "profiles/plain-language"}
+        self.fixture.use_judged(
+            profile={"kind": "suite_local", "path": "profiles/plain-language"}
         )
         case = self.fixture.manifest["cases"][0]
         case["prompt_file"] = "editorial-prompt.md"
@@ -7764,11 +7769,14 @@ class SchemaV3RunnerTests(unittest.TestCase):
             comparator_handler=compare,
         )
         output = self.fixture.root / "plain-language-result"
+
+        # Act
         with EvalRunner(suite, provider, provider) as runner:
             result = runner.run(
                 RunSelection(comparison_ids=("without-current",)), output_dir=output
             )
 
+        # Assert
         self.assertTrue(result["passed"], result)
         self.assertEqual(suite.comparator_profile.kind, "suite_local")
         self.assertIsNone(suite.comparator_profile.resources.authority_binding)
@@ -7791,44 +7799,59 @@ class SchemaV3RunnerTests(unittest.TestCase):
             {pair["final_winner"] for pair in result["pairs"]}, {"treatment"}
         )
 
-    def test_builtin_certification_root_rejects_symlink_before_dispatch(self) -> None:
-        self.fixture.use_v3_judged()
+    def test_run_when_builtin_certification_root_is_symlinked_rejects_before_dispatch(
+        self,
+    ) -> None:
+        # Arrange
+        self.fixture.use_judged()
         self.fixture.align_builtin_profile_authority()
-        evidence = self.fixture.suite_root / "skivolve/comparator_calibration/evidence"
+        evidence = self.fixture.suite_root / "comparator-evidence"
         evidence.symlink_to(self.fixture.root, target_is_directory=True)
         suite = load_suite(self.fixture.manifest_path)
         provider = self.fixture.provider()
+        # Act + Assert
         with EvalRunner(suite, provider, provider) as runner:
             with self.assertRaisesRegex(
                 RunnerError, "certification root traverses a symlink"
             ):
                 runner.preflight(RunSelection(comparison_ids=("without-current",)))
+        # Assert
         self.assertEqual(provider.agent_requests, [])
         self.assertEqual(provider.comparator_requests, [])
 
-    def test_objective_only_constructs_no_comparator_and_rejects_injection(
+    def test_runner_when_mode_is_objective_omits_comparator_and_rejects_injection(
         self,
     ) -> None:
-        self.fixture.use_v3_objective()
+        # Arrange
+        self.fixture.use_objective()
         suite = load_suite(self.fixture.manifest_path)
         injected = self.fixture.provider()
+        # Act + Assert
         with self.assertRaisesRegex(RunnerError, "reject injected comparator"):
             EvalRunner(suite, injected, injected)
 
+        # Arrange
         built = self.fixture.provider()
+
+        # Act + Assert
         with patch("skivolve.runner._build_provider", return_value=built) as build:
             with EvalRunner(suite) as runner:
                 self.assertIsNone(runner.comparator_provider)
         build.assert_called_once_with(suite.provider)
 
-    def test_objective_only_run_uses_verifiers_without_comparator_spend(self) -> None:
-        self.fixture.use_v3_objective()
+    def test_run_when_mode_is_objective_uses_verifiers_without_comparator_spend(
+        self,
+    ) -> None:
+        # Arrange
+        self.fixture.use_objective()
         suite = load_suite(self.fixture.manifest_path)
         provider = self.fixture.provider()
         output = self.fixture.root / "objective-result"
+        # Act
         with EvalRunner(suite, provider) as runner:
             result = runner.run(RunSelection(), output_dir=output)
 
+        # Assert
         self.assertEqual(result["execution_mode"], "objective_only")
         self.assertEqual(result["preflight"]["execution_mode"], "objective_only")
         self.assertIsNone(result["preflight"]["comparator"])
@@ -7854,8 +7877,11 @@ class SchemaV3RunnerTests(unittest.TestCase):
             )
         )
 
-    def test_objective_only_equal_failures_tie_and_sole_pass_wins(self) -> None:
-        self.fixture.use_v3_objective()
+    def test_aggregate_when_mode_is_objective_ties_equal_failures_and_selects_sole_pass(
+        self,
+    ) -> None:
+        # Arrange
+        self.fixture.use_objective()
 
         self.fixture.set_verifier(
             _PASSING_VERIFIER.replace(
@@ -7865,11 +7891,14 @@ class SchemaV3RunnerTests(unittest.TestCase):
         )
         suite = load_suite(self.fixture.manifest_path)
         both_fail_provider = self.fixture.provider()
+
+        # Act
         with EvalRunner(suite, both_fail_provider) as runner:
             both_fail = runner.run(
                 RunSelection(comparison_ids=("without-current",)),
                 output_dir=self.fixture.root / "objective-both-fail",
             )
+        # Assert
         self.assertTrue(
             all(
                 pair["final_winner"] == "tie"
@@ -7879,6 +7908,7 @@ class SchemaV3RunnerTests(unittest.TestCase):
         )
         self.assertFalse(both_fail["passed"])
 
+        # Arrange
         self.fixture.set_verifier(
             _PASSING_VERIFIER.replace(
                 'passed = answer.is_file() and bool(answer.read_text(encoding="utf-8").strip())',
@@ -7887,11 +7917,14 @@ class SchemaV3RunnerTests(unittest.TestCase):
         )
         suite = load_suite(self.fixture.manifest_path)
         sole_pass_provider = self.fixture.provider()
+
+        # Act
         with EvalRunner(suite, sole_pass_provider) as runner:
             sole_pass = runner.run(
                 RunSelection(comparison_ids=("without-current",)),
                 output_dir=self.fixture.root / "objective-sole-pass",
             )
+        # Assert
         self.assertTrue(
             all(
                 pair["final_winner"] == "treatment"
@@ -7900,11 +7933,15 @@ class SchemaV3RunnerTests(unittest.TestCase):
             )
         )
 
-    def test_objective_only_dry_run_is_write_free_and_holdout_is_denied(self) -> None:
-        self.fixture.use_v3_objective()
+    def test_run_when_objective_dry_run_targets_holdout_is_write_free_and_denied(
+        self,
+    ) -> None:
+        # Arrange
+        self.fixture.use_objective()
         suite = load_suite(self.fixture.manifest_path)
         provider = self.fixture.provider()
         output = self.fixture.root / "unused-output"
+        # Act + Assert
         with EvalRunner(suite, provider) as runner:
             dry_run = runner.run(RunSelection(), output_dir=output, dry_run=True)
             self.assertEqual(dry_run["execution_mode"], "objective_only")
@@ -7918,13 +7955,9 @@ class SchemaV3RunnerTests(unittest.TestCase):
                 dry_run["preflight"]["plan"]["maximum_comparator_exposure_usd"],
                 0,
             )
-            with self.assertRaisesRegex(
-                RunnerError, "objective-only holdout authority"
-            ):
+            with self.assertRaisesRegex(RunnerError, "explicit holdout plan"):
                 runner.preflight(RunSelection(split="holdout"))
-            with self.assertRaisesRegex(
-                RunnerError, "objective-only holdout authority"
-            ):
+            with self.assertRaisesRegex(RunnerError, "selection matched no cases"):
                 runner.prepare_holdout_plan(
                     output_path=self.fixture.root / "holdout.json",
                     plan_id="objective-holdout",
@@ -7938,23 +7971,26 @@ class SchemaV3RunnerTests(unittest.TestCase):
 
 
 class CheckedInSuiteTests(unittest.TestCase):
-    def test_holdout_plan_schema_is_strict_and_documents_trust_boundary(self) -> None:
+    def test_holdout_schema_when_loaded_exposes_only_current_strict_contract(
+        self,
+    ) -> None:
+        # Arrange
         schema = json.loads(
             (HARNESS_ROOT / "holdout-plan.schema.json").read_text(encoding="utf-8")
         )
+
+        # Act
+        provenance = schema["$defs"]["provenance"]
+
+        # Assert
         self.assertFalse(schema["additionalProperties"])
-        self.assertEqual(schema["properties"]["schema_version"]["enum"], [2, 3, 4])
-        self.assertEqual(len(schema["oneOf"]), 3)
+        self.assertEqual(schema["properties"]["schema_version"]["const"], 1)
         self.assertIn("source_bindings", schema["properties"])
         self.assertIn("evaluation_mode", schema["properties"])
         self.assertIn("generator_adapter_binding", schema["properties"])
-        provenance = schema["properties"]["provenance"]
         self.assertEqual(
-            provenance["properties"]["assurance"]["enum"],
-            [
-                "operator-declared-review-records",
-                "trusted-reviewed-attestation",
-            ],
+            provenance["properties"]["assurance"]["const"],
+            "operator-declared-review-records",
         )
         self.assertEqual(
             provenance["properties"]["privacy_claim"]["const"],
@@ -7966,53 +8002,35 @@ class CheckedInSuiteTests(unittest.TestCase):
         self.assertIn("consumption_record_path", schema["required"])
         self.assertIn(
             "release_case_fingerprint",
-            schema["properties"]["cases"]["items"]["required"],
+            schema["$defs"]["caseBinding"]["required"],
         )
         self.assertIn(
             "shared_tree_sha256",
-            schema["properties"]["cases"]["items"]["required"],
+            schema["$defs"]["caseBinding"]["required"],
         )
 
-    def test_suite_schema_supports_strict_v2_through_v7_modes(self) -> None:
+    def test_suite_schema_when_loaded_exposes_only_current_strict_contract(
+        self,
+    ) -> None:
+        # Arrange
         schema = json.loads(
             (HARNESS_ROOT / "suite.schema.json").read_text(encoding="utf-8")
         )
+
+        # Act
+        suite = schema["$defs"]["suite"]
+
+        # Assert
+        self.assertEqual(schema["$ref"], "#/$defs/suite")
+        self.assertEqual(suite["properties"]["schema_version"]["const"], 1)
         self.assertEqual(
-            [branch["$ref"] for branch in schema["oneOf"]],
-            [
-                "#/$defs/suiteV2",
-                "#/$defs/suiteV3",
-                "#/$defs/suiteV4",
-                "#/$defs/suiteV5",
-                "#/$defs/suiteV6",
-                "#/$defs/suiteV7",
-            ],
-        )
-        self.assertEqual(
-            schema["$defs"]["suiteV2"]["properties"]["schema_version"]["const"], 2
-        )
-        self.assertEqual(
-            schema["$defs"]["suiteV3"]["properties"]["schema_version"]["const"], 3
-        )
-        self.assertEqual(
-            schema["$defs"]["suiteV3"]["properties"]["evaluation_mode"]["enum"],
+            suite["properties"]["evaluation_mode"]["enum"],
             ["judged", "objective_only"],
         )
-        self.assertEqual(
-            schema["$defs"]["suiteV4"]["properties"]["schema_version"]["const"], 4
-        )
-        self.assertIn("shared_verifier_dir", schema["$defs"]["suiteV4"]["required"])
-        self.assertEqual(
-            schema["$defs"]["suiteV5"]["properties"]["schema_version"]["const"], 5
-        )
-        self.assertIn("holdout", schema["$defs"]["suiteV5"]["required"])
-        self.assertEqual(
-            schema["$defs"]["suiteV6"]["properties"]["schema_version"]["const"], 6
-        )
-        self.assertIn("providerV6", schema["$defs"])
-        self.assertEqual(
-            schema["$defs"]["suiteV7"]["properties"]["schema_version"]["const"], 7
-        )
+        self.assertIn("shared_verifier_dir", suite["required"])
+        self.assertIn("holdout", suite["required"])
+        self.assertIn("bundle_source", schema["$defs"]["caseBase"]["required"])
+        self.assertIn("artifact_contract", schema["$defs"]["caseBase"]["required"])
         self.assertIn("artifactContract", schema["$defs"])
 
     def test_gcc_attestation_includes_derived_driver_closure(self) -> None:

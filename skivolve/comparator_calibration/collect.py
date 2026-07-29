@@ -57,7 +57,7 @@ def _header(bundle: Any) -> dict[str, Any]:
     artifacts = release_summary["artifacts"]
     judge = bundle.release["judge"]
     return {
-        "schema_version": 2,
+        "schema_version": 1,
         "release_sha256": release_summary["release_sha256"],
         "corpus_sha256": artifacts["corpus_sha256"],
         "rubric_sha256": artifacts["rubric_sha256"],

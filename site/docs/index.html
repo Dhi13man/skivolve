@@ -52,7 +52,7 @@
 
     <main id="main-content" tabindex="-1">
       <header class="page-hero shell">
-        <p class="eyebrow">Documentation · Version 0.4.0</p>
+        <p class="eyebrow">Documentation · Version 0.5.0</p>
         <h1>Run your first evidence-bound evaluation.</h1>
         <p class="lede">Start with an offline dry run. It validates the suite, tools, exact sources, cases, provider locks, and selection before a model is invoked or result artifact is written.</p>
       </header>
@@ -72,31 +72,43 @@
 
         <article class="prose">
           <h2 id="requirements">Requirements</h2>
-          <p>The reference suite targets Linux with a working <code>systemd --user</code> manager, unprivileged user and mount namespaces, Python 3.11 or newer, Git, Go, and Node.js. An authenticated provider executable is required only for provider-backed runs.</p>
+          <p>The reference suite targets Linux with a working <code>systemd --user</code> manager; util-linux <code>unshare</code>, <code>mount</code>, and <code>setpriv</code>; unprivileged user and mount namespaces; Python 3.11 or newer; Git; Go; Node.js; and GitHub CLI with <code>gh attestation</code>. Claude runs also require Claude Code 2.1.187 or newer, <code>bubblewrap</code>, <code>socat</code>, and the executable sandbox-runtime seccomp helper.</p>
+          <p>The configured provider executable and its local prerequisites are required for dry-run validation. Authentication is required when the provider is invoked.</p>
           <p>Skivolve runs generated code. Read the <a href="../security/">security model</a> before using proprietary fixtures, private holdouts, or valuable provider credentials.</p>
 
-          <h2 id="install">Install from source</h2>
-          <pre><code>git clone https://github.com/Dhi13man/skivolve.git
+          <h2 id="install">Install the verified release</h2>
+          <pre><code>git clone --branch v0.5.0 https://github.com/Dhi13man/skivolve.git
 cd skivolve
 python3 -m venv .venv
 . .venv/bin/activate
-python -m pip install --upgrade pip
-python -m pip install -e ".[test]"</code></pre>
-          <p>The runtime has one exact third-party Python dependency for RFC 8785 JSON canonicalization. Development, test, build, and fuzz dependencies are maintained in separate hash-locked requirement sets.</p>
+mkdir -p /tmp/skivolve-0.5.0
+gh release download v0.5.0 --repo Dhi13man/skivolve \
+  --pattern "skivolve-0.5.0*" --pattern SHA256SUMS \
+  --dir /tmp/skivolve-0.5.0
+(cd /tmp/skivolve-0.5.0 &amp;&amp; sha256sum --check SHA256SUMS)
+gh attestation verify \
+  /tmp/skivolve-0.5.0/skivolve-0.5.0-py3-none-any.whl \
+  --repo Dhi13man/skivolve
+python -m pip install \
+  /tmp/skivolve-0.5.0/skivolve-0.5.0-py3-none-any.whl</code></pre>
+          <p>This leaves the tagged reference suite beside a provenance-verified installation. The runtime has one exact third-party dependency for RFC 8785 JSON canonicalization.</p>
 
           <h2 id="dry-run">Validate without dispatch</h2>
-          <pre><code>skivolve --comparison original-vs-no-skill --dry-run</code></pre>
-          <p>A dry run validates the manifest and selected cases, resolves required tools, binds source variants, checks provider protocol locks, and reports configured call and spend ceilings. Provider validation still requires the configured executable and local runtime prerequisites.</p>
+          <pre><code>skivolve --suite suite.json \
+  --comparison candidate-vs-original \
+  --dry-run</code></pre>
+          <p>A dry run validates the manifest and selected cases, resolves required tools, binds source variants, checks provider protocol locks, and reports configured call and spend ceilings. Successful output contains <code>"dry_run": true</code>.</p>
 
           <h2 id="verifier-only">Run objective verifiers</h2>
           <pre><code>skivolve \
+  --suite suite.json \
   --comparison candidate-vs-original \
   --verifier-only \
   --output-dir /tmp/skivolve-verifier</code></pre>
           <p>This mode skips comparator judgment but still invokes the configured generation provider. It is suitable when the case-specific objective oracle is the intended decision authority. Provider-backed runs can consume metered API spend or subscription quota.</p>
 
           <h2 id="suite">Understand the suite contract</h2>
-          <p>A suite declares comparison arms, repetitions, task fixtures, bundle sources, verifier commands, execution limits, and—on current schemas—provider adapters, judgment mode, and artifact contracts. The included suite compares a frozen original bundle, the current candidate, and a no-skill control.</p>
+          <p>Suite schema v1 requires explicit comparison arms, repetitions, task fixtures, bundle sources, verifier commands, execution limits, provider adapters, judgment mode, release comparisons, and artifact contracts. The included suite compares a frozen original bundle, the current candidate, and a no-skill control.</p>
           <ul>
             <li><strong>Objective-only:</strong> the case verifier decides; no comparator is constructed.</li>
             <li><strong>Judged:</strong> eligible ambiguity may use a selected, calibrated comparator profile.</li>
@@ -107,7 +119,7 @@ python -m pip install -e ".[test]"</code></pre>
 
           <h2 id="claims">Know what a result can claim</h2>
           <p>A public validation run is not a private holdout. A model-generated answer is not objective verification. A comparator decision is not source authority. Skivolve preserves those distinctions and fails closed when an artifact tries to borrow authority from another layer.</p>
-          <p>A release claim requires a separately stored private suite frozen before candidate evaluation, independent reviewers, a mode-<code>0600</code> sealed plan, declared release comparisons, and a single consumed execution record. Judged claims additionally require fresh live comparator certification.</p>
+          <p>A release claim requires a separately stored private suite frozen before candidate evaluation, independent reviewers, a mode-<code>0600</code> sealed plan, declared release comparisons, and a single consumed execution record. Judged claims additionally require fresh live comparator certification; the public repository ships none.</p>
           <div class="callout"><strong>Next:</strong> inspect the <a href="../corpus/">reference corpus</a>, trace the <a href="../architecture/">evaluation architecture</a>, or open the <a href="https://github.com/Dhi13man/skivolve">source repository</a>.</div>
         </article>
       </div>

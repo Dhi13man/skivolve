@@ -21,6 +21,7 @@ from pathlib import Path, PurePosixPath
 
 
 AUTHORITY_PATH = "skivolve/comparator-profile-authority.json"
+SOURCE_FINGERPRINT_DOMAIN = b"skivolve-source-fingerprint-v1\0"
 LEGACY_PACKAGE_PATH = "harness_evals/"
 LEGACY_COMMANDS = ("harness-evals", "harness-evals-prepare-holdout")
 PROFILE_LAYOUTS = {
@@ -55,6 +56,49 @@ def _tree_sha256(root: Path) -> str:
         digest.update(b"\0")
         digest.update(content)
         digest.update(b"\0")
+    return digest.hexdigest()
+
+
+def _source_fingerprint(bundle_source: str, root: Path) -> str:
+    digest = hashlib.sha256()
+    digest.update(SOURCE_FINGERPRINT_DOMAIN)
+    header = (
+        json.dumps(
+            {"bundle_source": bundle_source, "schema_version": 1},
+            ensure_ascii=True,
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode("ascii")
+        + b"\n"
+    )
+    digest.update(header)
+    digest.update(b"\0")
+    for path in sorted(
+        (path for path in root.rglob("*") if path.is_file()),
+        key=lambda path: path.relative_to(root).as_posix(),
+    ):
+        relative = path.relative_to(root).as_posix()
+        content = path.read_bytes()
+        metadata = (
+            json.dumps(
+                {
+                    "executable": bool(path.stat().st_mode & stat.S_IXUSR),
+                    "path": relative,
+                    "role": "bundle",
+                    "size": len(content),
+                },
+                ensure_ascii=True,
+                separators=(",", ":"),
+                sort_keys=True,
+            ).encode("ascii")
+            + b"\n"
+        )
+        digest.update(str(len(metadata)).encode("ascii"))
+        digest.update(b":")
+        digest.update(metadata)
+        digest.update(str(len(content)).encode("ascii"))
+        digest.update(b":")
+        digest.update(content)
     return digest.hexdigest()
 
 
@@ -298,18 +342,18 @@ def _write_external_suite(root: Path) -> ExternalSuite:
         encoding="utf-8",
     )
     suite = {
-        "schema_version": 4,
+        "schema_version": 1,
         "suite_id": "installed-package-smoke",
         "seed": 7123,
         "evaluation_mode": "judged",
         "repository_root": ".",
         "provider": {
-            "kind": "fake",
+            "adapter": "deterministic-fake",
             "model": "fake-model-v1",
             "timeout_seconds": 10,
         },
         "comparator": {
-            "kind": "fake",
+            "adapter": "deterministic-fake",
             "model": "fake-sonnet-v2",
             "timeout_seconds": 300,
             "max_budget_usd": 1.0,
@@ -338,11 +382,13 @@ def _write_external_suite(root: Path) -> ExternalSuite:
                 "comparator_order": "ab_ba",
             }
         ],
+        "holdout": {"comparison_ids": ["package-smoke"]},
         "cases": [
             {
                 "id": "basic",
                 "skill": "demo",
                 "bundle_source": "instruction-bundles/demo",
+                "artifact_contract": {"kind": "workspace_diff"},
                 "split": "train",
                 "prompt_file": "cases/basic/prompt.md",
                 "fixture_dir": "cases/basic/fixture",
@@ -370,13 +416,10 @@ def _write_external_suite(root: Path) -> ExternalSuite:
     }
     manifest = root / "external-suite.json"
     manifest.write_text(json.dumps(suite, indent=2) + "\n", encoding="utf-8")
-    bundle_tree_sha256 = _tree_sha256(bundle)
     return ExternalSuite(
         manifest=manifest,
         bundle_commit=bundle_commit,
-        bundle_source_sha256=hashlib.sha256(
-            bundle_tree_sha256.encode("ascii")
-        ).hexdigest(),
+        bundle_source_sha256=_source_fingerprint("instruction-bundles/demo", bundle),
         shared_tree_sha256=_tree_sha256(shared),
         verifier=(shared / "verifier.py").resolve(),
     )

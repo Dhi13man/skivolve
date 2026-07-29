@@ -10,14 +10,22 @@ from skivolve.artifacts import (
 
 
 class ArtifactNormalizationTests(unittest.TestCase):
-    def test_text_and_json_normalization_have_fixed_evidence(self) -> None:
-        text = normalize_artifact("final_output_text", "line 1\r\nline 2\r")
+    def test_normalize_artifact_when_text_or_json_is_valid_emits_fixed_evidence(
+        self,
+    ) -> None:
+        # Arrange
+        raw_text = "line 1\r\nline 2\r"
+
+        # Act
+        text = normalize_artifact("final_output_text", raw_text)
+
+        # Assert
         self.assertEqual(text.content, b"line 1\nline 2\n")
         self.assertEqual(
             text.as_evidence(),
             {
                 "byte_count": 14,
-                "canonicalization": "skivolve-text-lf-v2",
+                "canonicalization": "skivolve-text-lf-v1",
                 "filename": "artifact.txt",
                 "kind": "final_output_text",
                 "media_type": "text/plain; charset=utf-8",
@@ -26,8 +34,15 @@ class ArtifactNormalizationTests(unittest.TestCase):
             },
         )
 
-        first = normalize_artifact("final_output_json", '{"b":2, "a":1}')
-        second = normalize_artifact("final_output_json", '{\n"a":1.0,"b":2\n}')
+        # Arrange
+        first_json = '{"b":2, "a":1}'
+        second_json = '{\n"a":1.0,"b":2\n}'
+
+        # Act
+        first = normalize_artifact("final_output_json", first_json)
+        second = normalize_artifact("final_output_json", second_json)
+
+        # Assert
         self.assertEqual(first.content, b'{"a":1,"b":2}')
         self.assertEqual(second.content, first.content)
         self.assertEqual(

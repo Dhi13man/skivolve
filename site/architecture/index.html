@@ -91,17 +91,17 @@
       <section class="section shell" aria-labelledby="repro-title">
         <div class="section-heading"><p class="eyebrow">Reproducibility</p><h2 id="repro-title">The run records more than a score.</h2></div>
         <div class="grid-3">
-          <article class="card"><h3>Identity</h3><p>Suite bytes, case trees, exact commits, per-case bundle sources, runtime adapters, schemas, and release locks.</p></article>
+          <article class="card"><h3>Identity</h3><p>Suite bytes, case trees, exact commits, per-case bundle sources, runtime adapters, the suite schema, and release locks.</p></article>
           <article class="card"><h3>Execution</h3><p>Provider and model identity, requests, dispatch state, time and spend ceilings, output artifact, and verifier outcome.</p></article>
           <article class="card"><h3>Decision</h3><p>Objective evidence, eligible comparator evidence, AB/BA ordering, calibration support, aggregation, and gate status.</p></article>
         </div>
       </section>
 
       <section class="section shell" aria-labelledby="schema-title">
-        <div class="section-heading"><p class="eyebrow">Compatibility</p><h2 id="schema-title">Schema evolution is separate from package versioning.</h2></div>
+        <div class="section-heading"><p class="eyebrow">Current contract</p><h2 id="schema-title">Suite schema v1 makes every evaluation boundary explicit.</h2></div>
         <div class="prose">
-          <p>The Python package follows Semantic Versioning before 1.0. Manifest schemas, corpus versions, comparator protocols, provider capability revisions, holdout plans, and canonical artifact namespaces are independent public contracts. They change only when their own migration semantics require it.</p>
-          <p>Current schema 7 adds explicit workspace-diff, final-text, and final-JSON artifact contracts. Older supported schemas retain their declared compatibility behavior rather than being silently rewritten.</p>
+          <p>Skivolve accepts suite schema v1. It requires the evaluation mode, provider adapters, shared verifier boundary, release comparisons, per-case bundle source, and per-case artifact contract instead of deriving them from repository layout or names.</p>
+          <p>Each case declares a canonical workspace diff, final text, or final JSON artifact. The parser and JSON schema enforce the same closed contract, and unsupported input fails before provider dispatch.</p>
           <div class="callout">Inspect the executable architecture in <a href="https://github.com/Dhi13man/skivolve/blob/main/skivolve/runner.py">runner.py</a>, <a href="https://github.com/Dhi13man/skivolve/blob/main/skivolve/manifest.py">manifest.py</a>, and <a href="https://github.com/Dhi13man/skivolve/blob/main/skivolve/comparator_runtime.py">comparator_runtime.py</a>.</div>
         </div>
       </section>

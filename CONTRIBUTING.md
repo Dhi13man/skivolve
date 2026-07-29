@@ -15,7 +15,8 @@ python3 -m venv .venv
 . .venv/bin/activate
 python -m pip install --upgrade pip
 python -m pip install -e ".[test]"
-python -m pip install build==1.5.1 ruff==0.15.21
+python -m pip install --require-hashes -r requirements/build.txt
+python -m pip install --require-hashes -r requirements/quality.txt
 ```
 
 Runtime code must remain compatible with Python 3.11 and use only the standard library unless a dependency proposal establishes necessity, security posture, maintenance ownership, and a migration path.

@@ -1,11 +1,11 @@
 {
   "$schema": "manifest.schema.json",
-  "schema_version": 2,
+  "schema_version": 1,
   "corpus_id": "plain-language-revision-corpus-v1",
   "review_policy": {
     "historical_rubric_version": "1.0.0",
     "effective_rubric_version": "1.0.0",
-    "scoring_protocol_version": "2.3.0",
+    "scoring_protocol_version": "1.0.0",
     "resolution_authority": "fixture-resolution-v1",
     "history_rule": "Author-authored fixture labels, one consistency pass, and one fixture resolution are preserved for every pair; no independent-review claim is made."
   },

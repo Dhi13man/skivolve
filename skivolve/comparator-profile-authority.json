@@ -1,21 +1,21 @@
 {
-  "schema_version": 2,
+  "schema_version": 1,
   "profiles": [
     {
       "id": "plain-language-revision-v1",
-      "descriptor_sha256": "718e46433f4844cc4b011adaa31dd1086279411a6467dffd2a78afabb8c382a0",
-      "production_release_sha256": "10addf3df4cadfb9ef958ed58e593cd08e27d468d8dafe529232d48695d5c23b",
-      "test_release_sha256": "bb1fba55884917cd561cd655cae98c65bc9ccdcaac6dfffcd5e528fabe9487b5",
-      "certification_contract_sha256": "bbd14f10b83d4407c1a34cf066843bc71d10ab08f9ef1f5a178dde5d4ae08b1f",
+      "descriptor_sha256": "60806e964d6c415d1ebb007976acedd1286a2ec6dd788442e58f345cbbd26b30",
+      "production_release_sha256": "7ea415995f4a880b17df7165666a97c443c3ed8ff25ab1e759fb6ca93017b3ca",
+      "test_release_sha256": "864220a99a912a71783e3a6f4aa87c40a68a810c3826e285d177d4ec99ac170c",
+      "certification_contract_sha256": "48acdc90136e871ab9cea000c76f2ec94c517ed4466d6cba5beb57f5b4a9c265",
       "requires_live_certification": true,
       "authority_scope": "test"
     },
     {
-      "id": "software-engineering-v2.3",
-      "descriptor_sha256": "4611179d4f458f3364844013998060e60cbfab990b71cc17fc4981f8afad38ca",
-      "production_release_sha256": "82f6ac416e3d4a4f64d8535388e9493b7fc2ee679a7947cfc5a72f7efe8b997b",
-      "test_release_sha256": "214e1c720cee0faae09cd92724860e74b18dbcaaa1c8b7fa03281eef6857feb7",
-      "certification_contract_sha256": "bbd14f10b83d4407c1a34cf066843bc71d10ab08f9ef1f5a178dde5d4ae08b1f",
+      "id": "software-engineering-v1",
+      "descriptor_sha256": "6a166ed3a313ee145d00519382c93c9fb56223aaf9b80f29806428f53f505e35",
+      "production_release_sha256": "43678fff2ec7e5b94f562a28226fc1f82ae86429c321677e6dafa003b03d964e",
+      "test_release_sha256": "f67240a4cbe2a08433f914bd9b997c478fb163be712af699288d66ad754ebc2a",
+      "certification_contract_sha256": "48acdc90136e871ab9cea000c76f2ec94c517ed4466d6cba5beb57f5b4a9c265",
       "requires_live_certification": true,
       "authority_scope": "production"
     }

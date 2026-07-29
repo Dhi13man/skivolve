@@ -2247,6 +2247,7 @@ class CodexProviderTests(unittest.TestCase):
 
     def config(self) -> ProviderConfig:
         return ProviderConfig(
+            adapter_id="codex-app-server",
             kind="codex",
             executable=str(self.fake_executable),
             model="gpt-5.6-luna",

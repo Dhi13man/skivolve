@@ -1,8 +1,8 @@
 {
-  "schema_version": 2,
-  "id": "software-engineering-v2.3",
-  "version": "2.3.0",
-  "engine_contract": "software-change-comparator-v2.3",
+  "schema_version": 1,
+  "id": "software-engineering-v1",
+  "version": "1.0.0",
+  "engine_contract": "software-change-comparator-v1",
   "resources": {
     "calibration_engine": "calibration.py",
     "collector": "collect.py",

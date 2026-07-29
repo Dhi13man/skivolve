@@ -46,7 +46,7 @@
             "license": "https://opensource.org/license/mit",
             "programmingLanguage": "Python",
             "runtimePlatform": "Linux and Python 3.11 or newer",
-            "version": "0.4.0",
+            "version": "0.5.0",
             "isAccessibleForFree": true,
             "keywords": "agent skill evaluation, instruction evaluation, agent harness evaluation, reproducible A/B evaluation, blinded pairwise comparison"
           }
@@ -78,7 +78,7 @@
         <div class="hero-copy">
           <p class="eyebrow">Open-source agent skill evaluation framework</p>
           <h1 id="hero-title">Evolve agent skills <span class="accent">with evidence.</span></h1>
-          <p class="lede">Skivolve runs reproducible A/B evaluations of skills and instruction bundles through agent harnesses—combining isolated execution, objective case verifiers, calibrated blinded comparison, and sealed holdout support.</p>
+          <p class="lede">Skivolve runs reproducible A/B evaluations of skills and instruction bundles through agent harnesses, combining isolated execution, objective case verifiers, calibrated blinded comparison, and sealed holdout support.</p>
           <div class="button-row">
             <a class="button button-primary" href="#quick-start">Run the quick start</a>
             <a class="button" href="corpus/">Explore the corpus</a>
@@ -117,7 +117,7 @@
               </div>
             </div>
             <div class="ledger-footer">
-              <span>schema 7</span>
+              <span>suite schema v1</span>
               <span>bounded · reproducible · reviewable</span>
             </div>
           </div>
@@ -135,7 +135,7 @@
         <div class="section-heading">
           <p class="eyebrow">The trust problem</p>
           <h2 id="trust-title">Instruction changes are easy to propose. Trustworthy improvement is harder.</h2>
-          <p class="lede">A plausible answer is not an evaluation. Skivolve binds what ran, where it came from, which observable behavior was checked, and which authority—if any—may support a release claim.</p>
+          <p class="lede">A plausible answer is not an evaluation. Skivolve binds what ran, where it came from, which observable behavior was checked, and which authority may support a release claim.</p>
         </div>
         <div class="grid-3">
           <article class="card">
@@ -201,7 +201,7 @@
         <div class="section-heading">
           <p class="eyebrow">Artifact contracts</p>
           <h2 id="artifact-title">Evaluate the output you actually care about.</h2>
-          <p class="lede">Schema 7 declares one canonical artifact per case. Verifiers and comparators receive the same bounded representation.</p>
+          <p class="lede">Schema v1 declares one canonical artifact per case. Verifiers and comparators receive the same bounded representation.</p>
         </div>
         <div class="grid-3">
           <article class="card artifact"><code>workspace_diff</code><h3>Repository change</h3><p>Canonical UTF-8 patch evidence for implementation and refactoring tasks.</p></article>
@@ -244,10 +244,12 @@ python3 -m venv .venv
 python -m pip install -e ".[test]"
 
 # Validate manifests, tools, sources, cases, and protocol locks.
-skivolve --comparison original-vs-no-skill --dry-run
+skivolve --suite suite.json \
+  --comparison candidate-vs-original --dry-run
 
 # Run objective verifiers without comparator judgments.
-skivolve --comparison candidate-vs-original --verifier-only \
+skivolve --suite suite.json \
+  --comparison candidate-vs-original --verifier-only \
   --output-dir /tmp/skivolve-verifier</code></pre>
         <p class="callout"><strong>Provider-backed runs may consume metered API spend or subscription quota.</strong> The dry run reports configured ceilings before dispatch. Read the <a href="docs/">getting-started guide</a> and <a href="security/">security model</a> before a non-dry run.</p>
       </section>
@@ -256,7 +258,7 @@ skivolve --comparison candidate-vs-original --verifier-only \
         <div class="section-heading">
           <p class="eyebrow">Provider boundary</p>
           <h2 id="boundary-title">Capability is not authority.</h2>
-          <p class="lede">Provider names and model output cannot promote themselves. Authority follows reviewed adapter capabilities, exact runtime bindings, sealed plans, and—in judged production paths—live comparator certification.</p>
+          <p class="lede">Provider names and model output cannot promote themselves. In judged production paths, authority follows reviewed adapter capabilities, exact runtime bindings, sealed plans, and live comparator certification.</p>
         </div>
         <div class="grid-3">
           <article class="card"><p class="label">Production</p><h3>Claude CLI</h3><p>Generation and comparison under the repository’s strict provider and release-authority contract.</p></article>
@@ -268,7 +270,7 @@ skivolve --comparison candidate-vs-original --verifier-only \
       <section class="section shell" aria-labelledby="faq-title">
         <div class="section-heading">
           <p class="eyebrow">Questions</p>
-          <h2 id="faq-title">What Skivolve does—and refuses to pretend.</h2>
+          <h2 id="faq-title">What Skivolve does and refuses to pretend.</h2>
         </div>
         <details><summary>Does Skivolve automatically improve an agent skill?</summary><p>No. It measures candidate changes against declared cases and evidence gates. Choosing or generating the candidate remains outside the evaluator’s claim.</p></details>
         <details><summary>Is this an LLM benchmark or leaderboard?</summary><p>No. The repository does not publish model rankings or claim that one harness or bundle is superior. It is an evaluation framework and reference corpus.</p></details>

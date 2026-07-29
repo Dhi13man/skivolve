@@ -1,6 +1,6 @@
 # Skivolve Comparator Calibration
 
-This directory contains the production-authority software-engineering profile for a pairwise comparator that is blinded to gold labels and canonical candidate identities before it is trusted to score software engineering and testing evaluations. It is a closed, offline-verifiable release bundle. Live collection is explicit and is not part of the unit tests.
+This directory contains the production-authority `software-engineering-v1` profile for a pairwise comparator that is blinded to gold labels and canonical candidate identities before it is trusted to score software engineering and testing evaluations. It is a closed, offline-verifiable release bundle. Live collection is explicit and is not part of the unit tests.
 
 ## Profile Boundary
 
@@ -19,7 +19,7 @@ The comparator evaluates admissibility before quality:
 3. Report an admissibility decision and exact violation IDs consistent with the per-requirement statuses. Set `criteria` to `null` unless both candidates are eligible.
 4. When both qualify, compare the five locked criteria and mechanically derive `A`, `B`, `tie`, or `tradeoff` by Pareto dominance.
 5. Assign a performance winner only from a typed `workload`, `asymptotic`, or `measurement` basis in the controlled contract.
-6. Keep functional correctness and security/reliability tied in production; the v2.3 corpus does not calibrate decisive use of those axes. Typed bases remain structural evidence but do not override this release policy.
+6. Keep functional correctness and security/reliability tied in production; the v1 corpus does not calibrate decisive use of those axes. Typed bases remain structural evidence but do not override this release policy.
 
 The model never authors an overall outcome. The evaluator derives it from eligibility and, only where applicable, the criterion vector.
 
@@ -45,13 +45,13 @@ Each pair preserves five records:
 - `reviewer_b`: a separately executed comparison review under rubric 2.0.
 - `re_review`: a separately executed comparison review under rubric 2.1.
 - `resolution`: the preserved root resolution under rubric 2.1.
-- `scoring_gold`: the v2.3 exact per-requirement status expansion used for scoring.
+- `scoring_gold`: the v1 exact per-requirement status expansion used for scoring.
 
 The original records remain intact even where the v2.1 applicability rule makes their secondary criterion vectors obsolete. Semantic case IDs were visible to the comparison reviewers, so the release does not call these records blinded or claim cryptographic independence. It pins each preserved review stream's hash. The v2.1 re-review and root resolution disagree only on maintainability for `javascript-hot-regex-tradeoff`; the root rationale is recorded rather than disguising that disagreement as consensus.
 
 `scoring_gold` may expand root-resolved requirements to exact statuses but is mechanically forbidden from changing decisions, violation IDs, criterion vectors, or outcomes. The only nontrivial expansions are the explicitly unverifiable undeclared-package behavior in pairs 5 and 30.
 
-`migrate_adjudication_v21.py` is retained as a reproducible provenance asset. It materializes the recorded review sets, root resolutions, neutral length-bias metadata, and current v2.3 scoring labels. One execution must reproduce the checked-in manifest byte for byte; the focused migration regression enforces that stronger invariant. It is not imported by the evaluator or collector.
+`migrate_adjudication_v21.py` is retained as a reproducible provenance asset. It materializes the recorded review sets, root resolutions, neutral length-bias metadata, and current v1 scoring labels. One execution must reproduce the checked-in manifest byte for byte; the focused migration regression enforces that stronger invariant. It is not imported by the evaluator or collector.
 
 ## Locked Artifacts
 
@@ -94,7 +94,7 @@ Evidence uses one-based inclusive source ranges. Candidate evidence paths refer 
 
 Collection and production both call the same `ComparatorRuntime` and `SandboxedClaudeExecutor`; there is no direct collector-only subprocess path. The canonical core reconstructs patches, validates bounded evidence, derives eligibility and violations, enforces typed criterion support, and mechanically derives outcomes for both paths.
 
-The schema-v2 compatibility runtime reads this checkout directory directly. A schema-v3 built-in runtime resolves the same descriptor and release bytes from installed package resources, binds them to the exact suite manifest, baseline authority, and installed runtime sources, and loads live evidence from a persistent suite-owned certification root. Existing checkout suites retain `evidence/certification.json`; external installed-package suites use `comparator-evidence/software-engineering-v2.3/certification.json`, with the recorded evidence path relative to that same directory.
+The built-in runtime resolves descriptor and release bytes from installed package resources, binds them to the exact suite manifest, baseline authority, and installed runtime sources, and loads live evidence from the suite-owned `comparator-evidence/software-engineering-v1/certification.json`. The recorded evidence path is relative to that profile directory.
 
 `write_certification(runtime, evidence_path, destination, persistence_root=root)` is the shared writer for a persistent external root. `root` must already be an existing non-symlink directory and should be mode `0700`; directory permissions remain the caller's responsibility. The evidence and certification are enforced as mode `0600`. The loader re-evaluates the complete evidence against immutable profile bytes and the separately validated suite/runtime bindings before accepting the certification.
 
@@ -102,7 +102,7 @@ The model receives the canonical user payload on stdin, not argv. Raw stdout is 
 
 Spend is reserved at the full per-call ceiling before launch. An append-only, fsynced JSONL journal records the reservation before execution, then exact reconciliation or a full-ceiling forfeit. Unclosed reservations restore as full charges after interruption. Calibration evidence embeds and hashes this ledger. Journals, checkpoints, and certifications must be owner-only regular files; writes are mode `0600`, atomic where replacement is required, and fsynced with their parent directory. Reads bind bytes, hashes, and file fingerprints to one descriptor capture.
 
-No v2.3 live evidence or certification is checked in. This is intentional: protocol validation and dry runs report valid locks, while production judged runs fail closed with `live_calibration_valid: false`. A certification is valid only when complete fresh evidence passes every gate with one stable actual-model set, one stable local Claude executable digest, and one stable systemd version. Production rejects executable or systemd drift before a comparator call and model-set drift before accepting its result.
+No v1 live evidence or certification is checked in. This is intentional: protocol validation and dry runs report valid locks, while production judged runs fail closed with `live_calibration_valid: false`. A certification is valid only when complete fresh evidence passes every gate with one stable actual-model set, one stable local Claude executable digest, and one stable systemd version. Production rejects executable or systemd drift before a comparator call and model-set drift before accepting its result.
 
 The private copy prevents normal package or symlink updates from racing the attested CLI. It does not defend against a hostile process already running as the same host UID; that process is outside this evaluator's isolation boundary.
 
@@ -132,9 +132,9 @@ git diff -- manifest.json release.json tests/test-release.json
 Collect shared-runtime evidence. The calibration corpus has 100 billable calls with a locked 300-second timeout, `$1.00` per-call ceiling, and `$100.00` run ceiling. `expected_call_count` describes only this corpus and is never used for production planning. Output must be a direct child of the private mode-`0700` `evidence/` directory. Resume restores both successful charges and forfeited or interrupted reservations:
 
 ```bash
-python3 collect.py --output evidence/claude-sonnet-5-v2.3.json
-python3 calibration.py --evidence evidence/claude-sonnet-5-v2.3.json
-python3 certify.py --evidence evidence/claude-sonnet-5-v2.3.json
+python3 collect.py --output evidence/claude-sonnet-5-v1.json
+python3 calibration.py --evidence evidence/claude-sonnet-5-v1.json
+python3 certify.py --evidence evidence/claude-sonnet-5-v1.json
 ```
 
 Git does not preserve `0600` versus `0644`. After a fresh checkout of committed evidence, restore the enforced local modes before validation:
@@ -144,4 +144,4 @@ chmod 700 evidence
 chmod 600 evidence/*.json
 ```
 
-No live collection is required to validate protocol locks. Do not create a certification from synthetic evidence or copy a v2.2 result forward; v2.3 needs fresh execution through the shared runtime.
+No live collection is required to validate protocol locks. Do not create a certification from synthetic evidence or copy a historical v2.2 result into the v1 profile; v1 needs fresh execution through the shared runtime.

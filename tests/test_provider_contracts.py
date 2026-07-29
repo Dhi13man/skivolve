@@ -907,6 +907,16 @@ class ManifestProviderContractTests(unittest.TestCase):
         # Act + Assert
         self.assert_schema_and_parser_reject(payload)
 
+    def test_load_suite_when_fake_provider_sets_executable_rejects_schema_and_parser(
+        self,
+    ) -> None:
+        # Arrange
+        payload = copy.deepcopy(self.manifest)
+        payload["comparator"]["executable"] = "fake"  # type: ignore[index]
+
+        # Act + Assert
+        self.assert_schema_and_parser_reject(payload)
+
     def test_load_suite_when_timeout_exceeds_limit_rejects_schema_and_parser(
         self,
     ) -> None:

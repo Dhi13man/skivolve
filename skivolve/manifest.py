@@ -569,6 +569,8 @@ def _parse_provider(
             data["protocol_lock"],
             f"{location}.protocol_lock",
         )
+    if kind == "fake" and executable is not None:
+        raise ManifestError(f"deterministic fake {location} must not set executable")
     if kind == "claude" and (executable is None or max_budget_usd is None):
         raise ManifestError(f"Claude {location} requires executable and max_budget_usd")
     if kind == "codex":

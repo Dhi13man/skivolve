@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://github.com/Dhi13man/skivolve/blob/main/holdout-plan.schema.json",
+  "$id": "https://raw.githubusercontent.com/Dhi13man/skivolve/v0.5.0/holdout-plan.schema.json",
   "title": "Skivolve sealed holdout plan",
   "type": "object",
   "additionalProperties": false,

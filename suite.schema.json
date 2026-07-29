@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://example.invalid/skivolve/suite.schema.json",
+  "$id": "https://raw.githubusercontent.com/Dhi13man/skivolve/v0.5.0/suite.schema.json",
   "$ref": "#/$defs/suite",
   "$defs": {
     "suite": {

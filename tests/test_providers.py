@@ -96,6 +96,7 @@ class ClaudeCliProviderTests(unittest.TestCase):
 
     def config(self) -> ProviderConfig:
         return ProviderConfig(
+            adapter_id="claude-cli",
             kind="claude",
             executable=sys.executable,
             model="claude-test-20260710",
@@ -187,9 +188,10 @@ class ClaudeCliProviderTests(unittest.TestCase):
             sandbox_repository_root=Path.cwd(),
         )
 
-    def test_live_systemd_sandbox_hides_host_secrets_processes_and_sibling_arm(
+    def test_run_agent_when_live_sandbox_executes_hides_host_resources(
         self,
     ) -> None:
+        # Arrange
         test_root = Path.home() / ".cache" / "skill-eval-tests"
         test_root.mkdir(parents=True, exist_ok=True)
         with tempfile.TemporaryDirectory(dir=test_root) as temporary:
@@ -296,6 +298,7 @@ print(json.dumps({
             )
             executable.chmod(0o755)
             config = ProviderConfig(
+                adapter_id="claude-cli",
                 kind="claude",
                 executable=str(executable),
                 model="fake-model-exact",
@@ -345,9 +348,11 @@ print(json.dumps({
                     ("variant-two", workspace_two, workspace_one),
                 )
             ]
+            # Act
             with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
                 results = list(executor.map(provider.run_agent, requests))
 
+            # Assert
             for result in results:
                 evidence = json.loads(result.final_output)
                 self.assertEqual(
@@ -374,9 +379,10 @@ print(json.dumps({
             self.assertEqual((workspace_two / "value.txt").read_text(), "sandbox write")
 
     @patch("skivolve.providers.execute_bounded_transport")
-    def test_generator_and_independent_comparator_use_distinct_models(
+    def test_providers_when_roles_are_independent_use_distinct_models(
         self, run
     ) -> None:
+        # Arrange
         generator_model = "claude-haiku-test-20260710"
         comparator_model = "claude-sonnet-test-20260710"
         run.side_effect = [
@@ -393,6 +399,7 @@ print(json.dumps({
         ]
         generator = ClaudeCliProvider(
             ProviderConfig(
+                adapter_id="claude-cli",
                 kind="claude",
                 executable=sys.executable,
                 model=generator_model,
@@ -402,6 +409,7 @@ print(json.dumps({
         )
         comparator = ClaudeCliProvider(
             ProviderConfig(
+                adapter_id="claude-cli",
                 kind="claude",
                 executable=sys.executable,
                 model=comparator_model,
@@ -409,21 +417,6 @@ print(json.dumps({
                 timeout_seconds=30,
             )
         )
-        with tempfile.TemporaryDirectory() as temporary:
-            generator.run_agent(
-                AgentRequest(
-                    case_id="case",
-                    variant_id="variant",
-                    prompt="prompt",
-                    model=generator_model,
-                    workspace=Path(temporary),
-                    skill_snapshot=None,
-                    sandbox_pair_root=Path(temporary),
-                    sandbox_repository_root=Path(temporary),
-                    system_context="context",
-                    timeout_seconds=5,
-                )
-            )
         repository_root = Path.cwd()
         invocation_id = "1" * 64
         request_bytes = json.dumps(
@@ -505,6 +498,23 @@ print(json.dumps({
             as_json=lambda: transport_payload,
         )
         runtime.run_transport.return_value = transport
+
+        # Act
+        with tempfile.TemporaryDirectory() as temporary:
+            generator.run_agent(
+                AgentRequest(
+                    case_id="case",
+                    variant_id="variant",
+                    prompt="prompt",
+                    model=generator_model,
+                    workspace=Path(temporary),
+                    skill_snapshot=None,
+                    sandbox_pair_root=Path(temporary),
+                    sandbox_repository_root=Path(temporary),
+                    system_context="context",
+                    timeout_seconds=5,
+                )
+            )
         with (
             patch("skivolve.providers.SandboxedClaudeExecutor"),
             patch("skivolve.providers.validate_response", return_value=decision),
@@ -526,6 +536,7 @@ print(json.dumps({
                 )
             )
 
+        # Assert
         generator_command = run.call_args_list[0].args[0]
         self.assertEqual(
             generator_command[generator_command.index("--model") + 1], generator_model
@@ -1059,9 +1070,10 @@ print(json.dumps({
             with self.assertRaisesRegex(ProviderError, "above the configured"):
                 provider.run_agent(request)
 
-    def test_agent_rejects_executable_path_drift_after_initial_attestation(
+    def test_run_agent_when_executable_path_drifts_rejects_dispatch(
         self,
     ) -> None:
+        # Arrange
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             executable = root / "claude"
@@ -1072,6 +1084,7 @@ print(json.dumps({
             replacement.chmod(0o700)
             provider = ClaudeCliProvider(
                 ProviderConfig(
+                    adapter_id="claude-cli",
                     kind="claude",
                     executable=str(executable),
                     model="claude-test-20260710",
@@ -1080,6 +1093,8 @@ print(json.dumps({
                 )
             )
             os.replace(replacement, executable)
+
+            # Act + Assert
             with self.assertRaisesRegex(ProviderError, "executable drifted"):
                 provider.run_agent(
                     AgentRequest(
@@ -1464,11 +1479,14 @@ class SharedComparatorRuntimeTests(unittest.TestCase):
                     invocation_id="d" * 64,
                 )
 
-    def test_certification_writer_is_owner_only_and_rejects_link_target(self) -> None:
+    def test_write_certification_when_target_boundary_varies_enforces_private_file(
+        self,
+    ) -> None:
+        # Arrange
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary).resolve()
             evidence = root / "evidence.json"
-            atomic_write_private_json(evidence, {"schema_version": 2})
+            atomic_write_private_json(evidence, {"schema_version": 1})
             runtime = SimpleNamespace(
                 root=root,
                 bundle=object(),
@@ -1481,19 +1499,26 @@ class SharedComparatorRuntimeTests(unittest.TestCase):
                 "systemd_versions": ["systemd 255"],
             }
             destination = root / "certification.json"
+
+            # Act
             with patch.object(
                 comparator_runtime._calibration,
                 "evaluate_evidence",
                 return_value=result,
             ):
                 write_certification(runtime, evidence, destination)
+
+            # Assert
             self.assertEqual(stat.S_IMODE(destination.stat().st_mode), 0o600)
 
+            # Arrange
             victim = root / "victim.json"
             victim.write_text("{}", encoding="utf-8")
             victim.chmod(0o600)
             linked = root / "linked-certification.json"
             linked.symlink_to(victim)
+
+            # Act + Assert
             with (
                 patch.object(
                     comparator_runtime._calibration,
@@ -1504,12 +1529,15 @@ class SharedComparatorRuntimeTests(unittest.TestCase):
             ):
                 write_certification(runtime, evidence, linked)
 
+            # Arrange
             external = root.parent / f"{root.name}-external"
             external.mkdir()
             self.addCleanup(shutil.rmtree, external, True)
             escape = root / "escape"
             escape.symlink_to(external, target_is_directory=True)
             escaped_destination = escape / "created" / "certification.json"
+
+            # Act + Assert
             with (
                 patch.object(
                     comparator_runtime._calibration,
@@ -1519,13 +1547,18 @@ class SharedComparatorRuntimeTests(unittest.TestCase):
                 self.assertRaisesRegex(CalibrationError, "escapes its root"),
             ):
                 write_certification(runtime, evidence, escaped_destination)
+
+            # Assert
             self.assertFalse((external / "created").exists())
 
-    def test_certification_rederives_and_binds_systemd_version(self) -> None:
+    def test_load_certification_when_systemd_version_drifts_rejects_authority(
+        self,
+    ) -> None:
+        # Arrange
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary).resolve()
             evidence = root / "evidence.json"
-            atomic_write_private_json(evidence, {"schema_version": 2})
+            atomic_write_private_json(evidence, {"schema_version": 1})
             bundle = SimpleNamespace(release={"locked": True})
             runtime = SimpleNamespace(
                 root=root,
@@ -1543,6 +1576,8 @@ class SharedComparatorRuntimeTests(unittest.TestCase):
                 "systemd_versions": ["systemd 255"],
             }
             destination = root / "certification.json"
+
+            # Act
             with patch.object(
                 comparator_runtime._calibration,
                 "evaluate_evidence",
@@ -1555,12 +1590,17 @@ class SharedComparatorRuntimeTests(unittest.TestCase):
                     destination.name,
                     allow_missing=False,
                 )
+
+            # Assert
             self.assertTrue(certification.valid)
             self.assertEqual(certification.systemd_version, "systemd 255")
 
+            # Arrange
             payload = load_private_json(destination)
             payload["systemd_version"] = "systemd 256"
             atomic_write_private_json(destination, payload)
+
+            # Act
             with patch.object(
                 comparator_runtime._calibration,
                 "evaluate_evidence",
@@ -1572,6 +1612,8 @@ class SharedComparatorRuntimeTests(unittest.TestCase):
                     destination.name,
                     allow_missing=False,
                 )
+
+            # Assert
             self.assertFalse(certification.valid)
             self.assertIn("systemd version", certification.error)
 

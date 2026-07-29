@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import contextlib
 import hashlib
-import importlib.util
 import json
 import math
 import os
@@ -13,7 +12,6 @@ import shutil
 import signal
 import stat
 import subprocess
-import sys
 import tempfile
 import threading
 import time
@@ -23,6 +21,7 @@ from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 from typing import Any, Callable
 
+from skivolve.comparator_calibration import calibration as _calibration
 from skivolve.comparator_profiles import (
     ComparatorProfileResources,
     resolve_builtin_profile,
@@ -31,24 +30,6 @@ from skivolve.comparator_profiles import (
 
 SUITE_ROOT = Path(__file__).resolve().parent
 CALIBRATION_ROOT = SUITE_ROOT / "comparator_calibration"
-_CALIBRATION_MODULE_NAME = "_software_engineering_comparator_calibration_v23"
-_calibration_path = CALIBRATION_ROOT / "calibration.py"
-_existing_calibration = sys.modules.get("calibration")
-if (
-    _existing_calibration is not None
-    and Path(getattr(_existing_calibration, "__file__", "")).resolve()
-    == _calibration_path.resolve()
-):
-    _calibration = _existing_calibration
-else:
-    _calibration_spec = importlib.util.spec_from_file_location(
-        _CALIBRATION_MODULE_NAME, _calibration_path
-    )
-    if _calibration_spec is None or _calibration_spec.loader is None:
-        raise ImportError(f"cannot load comparator calibration: {_calibration_path}")
-    _calibration = importlib.util.module_from_spec(_calibration_spec)
-    sys.modules[_CALIBRATION_MODULE_NAME] = _calibration
-    _calibration_spec.loader.exec_module(_calibration)
 
 
 CalibrationError = _calibration.CalibrationError
@@ -73,7 +54,7 @@ validate_response = _calibration.validate_response
 
 
 RUNTIME_ADAPTER_ID = "shared-harness-claude-cli-v1"
-CERTIFICATION_SCHEMA_VERSION = 2
+CERTIFICATION_SCHEMA_VERSION = 1
 MAX_REQUEST_BYTES = 4 * 1024 * 1024
 MAX_BASE_BYTES = 2 * 1024 * 1024
 MAX_DIFF_BYTES = 1024 * 1024
@@ -1206,8 +1187,6 @@ class ComparatorRuntime:
         adapter = summary["runtime_adapter"]
         if adapter["id"] != RUNTIME_ADAPTER_ID:
             raise CalibrationError("release does not pin the shared runtime adapter")
-        if not adapter["shared_harness_compatible"]:
-            raise CalibrationError("release is incompatible with the shared harness")
         certification = _load_certification(
             bundle,
             resolved,
@@ -1339,7 +1318,6 @@ class ComparatorRuntime:
             if external_suite_root is not None:
                 _calibration.validate_packaged_release_bindings(
                     bundle,
-                    suite_root=external_suite_root,
                     suite_manifest_path=external_suite_manifest,
                     runtime_source_root=Path(__file__).resolve().parent,
                 )
@@ -1349,10 +1327,6 @@ class ComparatorRuntime:
             if adapter["id"] != RUNTIME_ADAPTER_ID:
                 raise CalibrationError(
                     "release does not pin the shared runtime adapter"
-                )
-            if not adapter["shared_harness_compatible"]:
-                raise CalibrationError(
-                    "release is incompatible with the shared harness"
                 )
             certification_base = (
                 resolved if certification_root is None else certification_root

@@ -1,23 +1,29 @@
 {
   "$schema": "suite.schema.json",
-  "schema_version": 2,
+  "schema_version": 1,
   "suite_id": "skivolve-software-engineering-v1",
   "seed": 20260710,
   "repository_root": ".",
+  "evaluation_mode": "judged",
   "provider": {
-    "kind": "claude",
+    "adapter": "claude-cli",
     "executable": "claude",
     "model": "claude-haiku-4-5-20251001",
     "max_budget_usd": 1.5,
     "timeout_seconds": 300
   },
   "comparator": {
-    "kind": "claude",
+    "adapter": "claude-cli",
     "executable": "claude",
     "model": "claude-sonnet-5",
     "max_budget_usd": 1.0,
     "timeout_seconds": 300
   },
+  "comparator_profile": {
+    "kind": "builtin",
+    "id": "software-engineering-v1"
+  },
+  "shared_verifier_dir": "cases/testing/_shared",
   "variants": [
     {
       "id": "no-skill",
@@ -58,10 +64,20 @@
       "comparator_order": "ab_ba"
     }
   ],
+  "holdout": {
+    "comparison_ids": [
+      "candidate-vs-original",
+      "candidate-vs-no-skill"
+    ]
+  },
   "cases": [
     {
       "id": "software-minimal-slug-limit",
       "skill": "engineering",
+      "bundle_source": "skills/engineering",
+      "artifact_contract": {
+        "kind": "workspace_diff"
+      },
       "split": "train",
       "prompt_file": "cases/software/minimal-slug-limit/prompt.md",
       "fixture_dir": "cases/software/minimal-slug-limit/fixture",
@@ -113,6 +129,10 @@
     {
       "id": "software-symbol-verification",
       "skill": "engineering",
+      "bundle_source": "skills/engineering",
+      "artifact_contract": {
+        "kind": "workspace_diff"
+      },
       "split": "train",
       "prompt_file": "cases/software/symbol-verification/prompt.md",
       "fixture_dir": "cases/software/symbol-verification/fixture",
@@ -160,6 +180,10 @@
     {
       "id": "software-secure-archive-restore",
       "skill": "engineering",
+      "bundle_source": "skills/engineering",
+      "artifact_contract": {
+        "kind": "workspace_diff"
+      },
       "split": "train",
       "prompt_file": "cases/software/secure-archive-restore/prompt.md",
       "fixture_dir": "cases/software/secure-archive-restore/fixture",
@@ -253,6 +277,10 @@
     {
       "id": "software-representative-performance",
       "skill": "engineering",
+      "bundle_source": "skills/engineering",
+      "artifact_contract": {
+        "kind": "workspace_diff"
+      },
       "split": "train",
       "prompt_file": "cases/software/representative-performance/prompt.md",
       "fixture_dir": "cases/software/representative-performance/fixture",
@@ -297,6 +325,10 @@
     {
       "id": "software-public-api-compatibility",
       "skill": "engineering",
+      "bundle_source": "skills/engineering",
+      "artifact_contract": {
+        "kind": "workspace_diff"
+      },
       "split": "train",
       "prompt_file": "cases/software/public-api-compatibility/prompt.md",
       "fixture_dir": "cases/software/public-api-compatibility/fixture",
@@ -344,6 +376,10 @@
     {
       "id": "software-concurrent-store",
       "skill": "engineering",
+      "bundle_source": "skills/engineering",
+      "artifact_contract": {
+        "kind": "workspace_diff"
+      },
       "split": "validation",
       "prompt_file": "cases/software/concurrent-store/prompt.md",
       "fixture_dir": "cases/software/concurrent-store/fixture",
@@ -394,6 +430,10 @@
     {
       "id": "software-transactional-event-intent",
       "skill": "engineering",
+      "bundle_source": "skills/engineering",
+      "artifact_contract": {
+        "kind": "workspace_diff"
+      },
       "split": "validation",
       "prompt_file": "cases/software/transactional-event-intent/prompt.md",
       "fixture_dir": "cases/software/transactional-event-intent/fixture",
@@ -457,6 +497,10 @@
     {
       "id": "software-behavioral-subtyping",
       "skill": "engineering",
+      "bundle_source": "skills/engineering",
+      "artifact_contract": {
+        "kind": "workspace_diff"
+      },
       "split": "validation",
       "prompt_file": "cases/software/behavioral-subtyping/prompt.md",
       "fixture_dir": "cases/software/behavioral-subtyping/fixture",
@@ -514,6 +558,10 @@
     {
       "id": "software-knowledge-boundary",
       "skill": "engineering",
+      "bundle_source": "skills/engineering",
+      "artifact_contract": {
+        "kind": "workspace_diff"
+      },
       "split": "validation",
       "prompt_file": "cases/software/knowledge-boundary/prompt.md",
       "fixture_dir": "cases/software/knowledge-boundary/fixture",
@@ -565,6 +613,10 @@
     {
       "id": "software-domain-simplicity",
       "skill": "engineering",
+      "bundle_source": "skills/engineering",
+      "artifact_contract": {
+        "kind": "workspace_diff"
+      },
       "split": "validation",
       "prompt_file": "cases/software/domain-simplicity/prompt.md",
       "fixture_dir": "cases/software/domain-simplicity/fixture",
@@ -616,6 +668,10 @@
     {
       "id": "testing-oracle-sensitivity",
       "skill": "testing",
+      "bundle_source": "skills/testing",
+      "artifact_contract": {
+        "kind": "workspace_diff"
+      },
       "split": "train",
       "prompt_file": "cases/testing/oracle-sensitivity/prompt.md",
       "fixture_dir": "cases/testing/oracle-sensitivity/fixture",
@@ -667,6 +723,10 @@
     {
       "id": "testing-parser-boundaries",
       "skill": "testing",
+      "bundle_source": "skills/testing",
+      "artifact_contract": {
+        "kind": "workspace_diff"
+      },
       "split": "train",
       "prompt_file": "cases/testing/parser-boundaries/prompt.md",
       "fixture_dir": "cases/testing/parser-boundaries/fixture",
@@ -720,6 +780,10 @@
     {
       "id": "testing-state-machine-sequences",
       "skill": "testing",
+      "bundle_source": "skills/testing",
+      "artifact_contract": {
+        "kind": "workspace_diff"
+      },
       "split": "train",
       "prompt_file": "cases/testing/state-machine-sequences/prompt.md",
       "fixture_dir": "cases/testing/state-machine-sequences/fixture",
@@ -773,6 +837,10 @@
     {
       "id": "testing-real-boundary-fidelity",
       "skill": "testing",
+      "bundle_source": "skills/testing",
+      "artifact_contract": {
+        "kind": "workspace_diff"
+      },
       "split": "train",
       "prompt_file": "cases/testing/real-boundary-fidelity/prompt.md",
       "fixture_dir": "cases/testing/real-boundary-fidelity/fixture",
@@ -824,6 +892,10 @@
     {
       "id": "testing-concurrency-flake",
       "skill": "testing",
+      "bundle_source": "skills/testing",
+      "artifact_contract": {
+        "kind": "workspace_diff"
+      },
       "split": "train",
       "prompt_file": "cases/testing/concurrency-flake/prompt.md",
       "fixture_dir": "cases/testing/concurrency-flake/fixture",
@@ -886,6 +958,10 @@
     {
       "id": "testing-legacy-characterization",
       "skill": "testing",
+      "bundle_source": "skills/testing",
+      "artifact_contract": {
+        "kind": "workspace_diff"
+      },
       "split": "validation",
       "prompt_file": "cases/testing/legacy-characterization/prompt.md",
       "fixture_dir": "cases/testing/legacy-characterization/fixture",
@@ -943,6 +1019,10 @@
     {
       "id": "testing-event-idempotency",
       "skill": "testing",
+      "bundle_source": "skills/testing",
+      "artifact_contract": {
+        "kind": "workspace_diff"
+      },
       "split": "validation",
       "prompt_file": "cases/testing/event-idempotency/prompt.md",
       "fixture_dir": "cases/testing/event-idempotency/fixture",

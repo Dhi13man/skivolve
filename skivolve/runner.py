@@ -43,13 +43,13 @@ from skivolve.comparator_runtime import (
 
 from .holdout_plan import (
     EMPTY_SOURCE_SHA256,
+    HOLDOUT_PLAN_SCHEMA_VERSION,
     OPERATOR_DECLARED_ASSURANCE,
     SOURCE_FINGERPRINT_DOMAIN,
     HoldoutPlan,
     HoldoutPlanError,
     load_holdout_plan,
 )
-from .comparator_profiles import BUILTIN_SOFTWARE_PROFILE_ID, resolve_builtin_profile
 from .manifest import (
     CaseSpec,
     ComparisonSpec,
@@ -88,17 +88,7 @@ _GENERATED_CACHE_DIRECTORIES = frozenset(
 _GENERATED_CACHE_SUFFIXES = frozenset({".pyc", ".pyo"})
 _SANDBOX_TOOLING: tuple[str, str, str, str, str, str, str] | None = None
 _SANDBOX_TOOLING_LOCK = threading.Lock()
-_HOLDOUT_COMPARISON_PROFILE = (
-    ("candidate-vs-original", "original", "candidate"),
-    ("candidate-vs-no-skill", "no-skill", "candidate"),
-)
-_HOLDOUT_COMPARISON_IDS = tuple(item[0] for item in _HOLDOUT_COMPARISON_PROFILE)
 _MIN_HOLDOUT_CASES_PER_SKILL = 8
-_HOLDOUT_VARIANT_KINDS = {
-    "no-skill": "without_skill",
-    "original": "git_ref",
-    "candidate": "worktree",
-}
 _OBJECTIVE_ACCEPTANCE_POLICY = {
     "equal_rule": "tie",
     "policy_id": "verifier-pass-v1",
@@ -119,35 +109,19 @@ _CODEX_PROTOCOL_PROVENANCE_KEYS = frozenset(
 )
 
 
-def _release_comparison_ids(suite: SuiteSpec) -> tuple[str, ...]:
-    if suite.schema_version >= 5:
-        if suite.holdout_comparison_ids is None:
-            raise RunnerError("schema-v5 suite omitted holdout comparison authority")
-        return suite.holdout_comparison_ids
-    return _HOLDOUT_COMPARISON_IDS
-
-
 def _comparator_profile_binding(
     runtime: ComparatorRuntime,
 ) -> tuple[str, str, str]:
     if (
-        runtime.profile_id is not None
-        and runtime.profile_descriptor_sha256 is not None
-        and runtime.profile_authority_registry_sha256 is not None
+        runtime.profile_id is None
+        or runtime.profile_descriptor_sha256 is None
+        or runtime.profile_authority_registry_sha256 is None
     ):
-        return (
-            runtime.profile_id,
-            runtime.profile_descriptor_sha256,
-            runtime.profile_authority_registry_sha256,
-        )
-    resources = resolve_builtin_profile(BUILTIN_SOFTWARE_PROFILE_ID)
-    authority = resources.authority_binding
-    if authority is None:
-        raise RunnerError("compatibility comparator profile lacks reviewed authority")
+        raise RunnerError("comparator profile lacks reviewed authority")
     return (
-        resources.descriptor.id,
-        resources.descriptor.descriptor_sha256,
-        authority.registry_sha256,
+        runtime.profile_id,
+        runtime.profile_descriptor_sha256,
+        runtime.profile_authority_registry_sha256,
     )
 
 
@@ -953,7 +927,7 @@ class _ExecutableAttestation:
 
 
 def _build_provider(config: ProviderConfig) -> EvalProvider:
-    adapter_id = config.reviewed_adapter_id
+    adapter_id = config.adapter_id
     if adapter_id == "claude-cli":
         return ClaudeCliProvider(config)
     if adapter_id == "codex-app-server":
@@ -1130,7 +1104,7 @@ def _codex_provider_binding(
     verify_executable: bool,
 ) -> dict[str, Any]:
     if (
-        config.reviewed_adapter_id != "codex-app-server"
+        config.adapter_id != "codex-app-server"
         or config.billing_basis != "chatgpt_subscription"
         or config.max_budget_usd is not None
         or not isinstance(config.executable, str)
@@ -1246,7 +1220,7 @@ def _provider_authority_binding(
     provider_version: str,
     protocol_provenance: dict[str, Any] | None,
 ) -> dict[str, Any]:
-    capabilities = capabilities_for(config.reviewed_adapter_id, role=role)
+    capabilities = capabilities_for(config.adapter_id, role=role)
     protocol_lock_sha256 = (
         _sha256(
             _read_stable_binding_file(
@@ -1529,9 +1503,7 @@ def _claim_holdout_consumption(
     )
     payload = _canonical_json_bytes(
         {
-            "candidate_commit": plan.candidate_commit,
             "manifest_sha256": plan.manifest_sha256,
-            "original_commit": plan.original_commit,
             "plan_sha256": plan.sha256,
             "result_root": str(result_root),
             "schema_version": 1,
@@ -1670,9 +1642,7 @@ class EvalRunner:
             else:
                 self.comparator_provider = comparator_provider
             self._comparator_provider_instance = self.comparator_provider
-            expected_policy = execution_policy_for(
-                suite.provider.reviewed_adapter_id
-            ).as_json()
+            expected_policy = execution_policy_for(suite.provider.adapter_id).as_json()
             observed_policy = _provider_execution_policy(self.agent_provider)
             if observed_policy != expected_policy:
                 raise RunnerError(
@@ -1724,7 +1694,7 @@ class EvalRunner:
                     self._agent_protocol_provenance,
                     verify_executable=True,
                 )
-                if self.suite.provider.reviewed_adapter_id == "codex-app-server"
+                if self.suite.provider.adapter_id == "codex-app-server"
                 else None
             )
             (
@@ -1840,11 +1810,6 @@ class EvalRunner:
         )
         runtime = None
         if selection.split == "holdout":
-            if (
-                self.suite.evaluation_mode == "objective_only"
-                and self.suite.schema_version < 5
-            ):
-                raise RunnerError("objective-only holdout authority is unavailable")
             if self.suite.evaluation_mode == "judged":
                 runtime = self._load_comparator_runtime()
                 self._require_production_holdout_authority(runtime)
@@ -1856,7 +1821,7 @@ class EvalRunner:
             runtime = self._load_comparator_runtime()
         generator_artifact_kinds = set(
             capabilities_for(
-                self.suite.provider.reviewed_adapter_id, role="generation"
+                self.suite.provider.adapter_id, role="generation"
             ).artifact_outputs
         )
         unsupported_generator_artifacts = sorted(
@@ -1900,13 +1865,9 @@ class EvalRunner:
             variant = variants_by_id[variant_id]
             source_records[variant.id] = self._preflight_variant(variant, cases)
         if selection.split == "holdout":
-            if self.suite.schema_version >= 5:
-                self._assert_generic_holdout_source_authority(
-                    comparisons, cases, source_records
-                )
-            else:
-                assert runtime is not None
-                self._assert_holdout_source_authority(runtime, source_records)
+            self._assert_generic_holdout_source_authority(
+                comparisons, cases, source_records
+            )
         release_context_commits = {
             role: (
                 (
@@ -1918,7 +1879,6 @@ class EvalRunner:
             )
             for role, record in source_records.items()
             if isinstance(record.get("source_commit"), str)
-            and (self.suite.schema_version >= 5 or role in {"candidate", "original"})
         }
         shared_root = _effective_shared_verifier_dir(self.suite)
         self._shared_snapshot = (
@@ -2026,9 +1986,7 @@ class EvalRunner:
             comparisons,
             runtime,
             agent_per_invocation_max_usd=self.suite.provider.max_budget_usd,
-            agent_billing_basis=getattr(
-                self.suite.provider, "billing_basis", "metered_api"
-            ),
+            agent_billing_basis=self.suite.provider.billing_basis,
         )
         if runtime is not None and not selection.verifier_only:
             _assert_comparator_plan_within_release_cap(execution_plan)
@@ -2047,19 +2005,18 @@ class EvalRunner:
                 "live_calibration_valid": runtime.live_calibration_valid,
                 "certification": runtime.certification.as_json(),
             }
-            if self.suite.schema_version >= 3:
-                assert self.suite.comparator_profile is not None
-                comparator_evidence.update(
-                    {
-                        "profile_kind": self.suite.comparator_profile.kind,
-                        "profile_id": runtime.profile_id,
-                        "profile_descriptor_sha256": runtime.profile_descriptor_sha256,
-                        "profile_authority_registry_sha256": (
-                            runtime.profile_authority_registry_sha256
-                        ),
-                        "profile_locks_valid": runtime.profile_locks_valid,
-                    }
-                )
+            assert self.suite.comparator_profile is not None
+            comparator_evidence.update(
+                {
+                    "profile_kind": self.suite.comparator_profile.kind,
+                    "profile_id": runtime.profile_id,
+                    "profile_descriptor_sha256": runtime.profile_descriptor_sha256,
+                    "profile_authority_registry_sha256": (
+                        runtime.profile_authority_registry_sha256
+                    ),
+                    "profile_locks_valid": runtime.profile_locks_valid,
+                }
+            )
         preflight_result = {
             "execution_mode": execution_mode,
             "suite_id": self.suite.suite_id,
@@ -2126,12 +2083,11 @@ class EvalRunner:
                     else None
                 ),
             }
-            if self.suite.schema_version >= 3:
-                dry_run_result["profile_locks_valid"] = (
-                    comparator_evidence["profile_locks_valid"]
-                    if comparator_evidence is not None
-                    else None
-                )
+            dry_run_result["profile_locks_valid"] = (
+                comparator_evidence["profile_locks_valid"]
+                if comparator_evidence is not None
+                else None
+            )
             return dry_run_result
         runtime: ComparatorRuntime | None = None
         if self.suite.evaluation_mode == "judged":
@@ -2140,7 +2096,7 @@ class EvalRunner:
             assert self.suite.comparator is not None
             if not (
                 runtime.bundle.release["test_release"]
-                and self.suite.comparator.reviewed_adapter_id == "deterministic-fake"
+                and self.suite.comparator.adapter_id == "deterministic-fake"
             ):
                 try:
                     if self.suite.comparator_profile.kind == "suite_local":
@@ -2298,14 +2254,6 @@ class EvalRunner:
         """Prepare, write, and preflight one sealed production holdout plan."""
 
         self._ensure_open()
-        if (
-            self.suite.evaluation_mode == "objective_only"
-            and self.suite.schema_version < 5
-        ):
-            raise RunnerError("objective-only holdout authority is unavailable")
-        if self.suite.evaluation_mode == "judged":
-            runtime = self._load_comparator_runtime()
-            self._require_production_holdout_authority(runtime)
         output = _new_external_plan_path(output_path, self.suite.root)
         consumption_record_path = _consumption_record_path_for_plan(output)
         _validate_consumption_record_target(
@@ -2313,7 +2261,7 @@ class EvalRunner:
             self.suite.root,
             require_absent=True,
         )
-        release_comparison_ids = _release_comparison_ids(self.suite)
+        release_comparison_ids = self.suite.holdout_comparison_ids
         selection = RunSelection(
             split="holdout",
             comparison_ids=release_comparison_ids,
@@ -2323,7 +2271,7 @@ class EvalRunner:
             comparison.id: comparison for comparison in self.suite.comparisons
         }
         payload = {
-            "schema_version": 4 if self.suite.schema_version >= 6 else 3,
+            "schema_version": HOLDOUT_PLAN_SCHEMA_VERSION,
             "plan_id": plan_id,
             "status": "sealed",
             "manifest_sha256": draft["manifest_sha256"],
@@ -2379,12 +2327,9 @@ class EvalRunner:
                 "seal_record": seal_record,
             },
         }
-        if self.suite.schema_version >= 6:
-            payload["generator_adapter_binding"] = self._agent_authority_binding
-            if self._comparator_authority_binding is not None:
-                payload["comparator_adapter_binding"] = (
-                    self._comparator_authority_binding
-                )
+        payload["generator_adapter_binding"] = self._agent_authority_binding
+        if self._comparator_authority_binding is not None:
+            payload["comparator_adapter_binding"] = self._comparator_authority_binding
         if self.suite.evaluation_mode == "judged":
             comparator = draft["comparator"]
             assert comparator is not None
@@ -2462,7 +2407,7 @@ class EvalRunner:
             getattr(self.agent_provider, "protocol_lock_sha256", None),
             "generator provider protocol lock digest",
         )
-        raw_protocol_lock = getattr(self.suite.provider, "protocol_lock", None)
+        raw_protocol_lock = self.suite.provider.protocol_lock
         protocol_lock: str | None = None
         if raw_protocol_lock is not None:
             path = Path(raw_protocol_lock)
@@ -2484,23 +2429,21 @@ class EvalRunner:
             "version": self._agent_provider_version,
             "requested_model": self.suite.provider.model,
             "executable_sha256": executable_sha256,
-            "reasoning_effort": getattr(self.suite.provider, "reasoning_effort", None),
-            "billing_basis": getattr(
-                self.suite.provider, "billing_basis", "metered_api"
-            ),
+            "reasoning_effort": self.suite.provider.reasoning_effort,
+            "billing_basis": self.suite.provider.billing_basis,
             "protocol_lock": protocol_lock,
             "protocol_lock_sha256": protocol_lock_sha256,
             "execution_policy": dict(self._agent_execution_policy),
         }
 
     def _production_generator_release_authoritative(self) -> bool:
-        capabilities = capabilities_for(self.suite.provider.reviewed_adapter_id)
+        capabilities = capabilities_for(self.suite.provider.adapter_id)
         if not (
             self._agent_execution_policy["release_authoritative"]
             and capabilities.authority_scope == "production"
             and self._agent_authority_binding["capability_sha256"]
             == capabilities.sha256
-            and self.suite.provider.reviewed_adapter_id == "claude-cli"
+            and self.suite.provider.adapter_id == "claude-cli"
             and type(self.agent_provider) is ClaudeCliProvider
             and not self._agent_provider_injected
             and self.agent_provider is self._agent_provider_instance
@@ -2536,9 +2479,7 @@ class EvalRunner:
             raise RunnerError(
                 "generator provider instance drifted after initialization"
             )
-        expected = execution_policy_for(
-            self.suite.provider.reviewed_adapter_id
-        ).as_json()
+        expected = execution_policy_for(self.suite.provider.adapter_id).as_json()
         if expected != self._agent_execution_policy:
             raise RunnerError("manifest provider execution policy drifted")
         if _provider_execution_policy(self.agent_provider) != expected:
@@ -2572,7 +2513,7 @@ class EvalRunner:
     def _assert_codex_provider_binding_integrity(
         self, *, verify_executable: bool
     ) -> None:
-        if self.suite.provider.reviewed_adapter_id != "codex-app-server":
+        if self.suite.provider.adapter_id != "codex-app-server":
             if self._agent_codex_binding is not None:
                 raise RunnerError("Codex provider binding persisted for another kind")
             return
@@ -2618,14 +2559,14 @@ class EvalRunner:
             return False
         self._assert_comparator_authority_binding_integrity()
         capabilities = capabilities_for(
-            self.suite.comparator.reviewed_adapter_id, role="comparison"
+            self.suite.comparator.adapter_id, role="comparison"
         )
         if not (
             capabilities.authority_scope == "production"
             and self._comparator_authority_binding is not None
             and self._comparator_authority_binding["capability_sha256"]
             == capabilities.sha256
-            and self.suite.comparator.reviewed_adapter_id == "claude-cli"
+            and self.suite.comparator.adapter_id == "claude-cli"
             and type(self.comparator_provider) is ClaudeCliProvider
             and not self._comparator_provider_injected
             and self.comparator_provider is self._comparator_provider_instance
@@ -2672,7 +2613,7 @@ class EvalRunner:
             raise RunnerError("agent result protocol provenance differs from preflight")
         sandbox = payload["sandbox"]
         expected_sandbox_kind = capabilities_for(
-            self.suite.provider.reviewed_adapter_id
+            self.suite.provider.adapter_id
         ).sandbox_kind
         injected_fake_admitted = (
             verifier_only
@@ -2691,7 +2632,7 @@ class EvalRunner:
             raise RunnerError("agent result sandbox kind differs from provider kind")
         if sandbox.get("enforced") is not True:
             raise RunnerError("agent result sandbox was not enforced")
-        if self.suite.provider.reviewed_adapter_id == "codex-app-server" and (
+        if self.suite.provider.adapter_id == "codex-app-server" and (
             sandbox.get("permission_profile") != "eval"
             or sandbox.get("cleanup_confirmed") is not True
         ):
@@ -2701,7 +2642,7 @@ class EvalRunner:
         return payload
 
     def _has_injected_fake_generator_identity(self) -> bool:
-        return self.suite.provider.reviewed_adapter_id == "claude-cli" and (
+        return self.suite.provider.adapter_id == "claude-cli" and (
             isinstance(self.agent_provider, FakeProvider)
             or self._agent_provider_name == "deterministic-fake"
         )
@@ -2709,7 +2650,7 @@ class EvalRunner:
     def _uses_exact_injected_fake_generator(self) -> bool:
         return (
             type(self.agent_provider) is FakeProvider
-            and self.suite.provider.reviewed_adapter_id == "claude-cli"
+            and self.suite.provider.adapter_id == "claude-cli"
             and self._agent_provider_name == "deterministic-fake"
         )
 
@@ -2736,8 +2677,7 @@ class EvalRunner:
         except CalibrationError as exc:
             raise RunnerError(str(exc)) from exc
         if (
-            self.suite.schema_version >= 6
-            and not runtime.bundle.release["test_release"]
+            not runtime.bundle.release["test_release"]
             and not self._production_comparator_release_authoritative()
         ):
             raise RunnerError(
@@ -2746,6 +2686,11 @@ class EvalRunner:
 
     @staticmethod
     def _assert_production_holdout_runtime(runtime: ComparatorRuntime) -> None:
+        release_sha256 = hashlib.sha256(
+            canonical_bytes(runtime.bundle.release)
+        ).hexdigest()
+        if release_sha256 != runtime.release_summary.get("release_sha256"):
+            raise RunnerError("comparator release bytes drifted after load")
         try:
             runtime.require_live_calibration()
         except CalibrationError as exc:
@@ -2754,38 +2699,6 @@ class EvalRunner:
             raise RunnerError(
                 "production holdout requires live comparator calibration evidence"
             )
-
-    @staticmethod
-    def _assert_holdout_source_authority(
-        runtime: ComparatorRuntime,
-        source_records: dict[str, Any],
-    ) -> None:
-        runtime_adapter = runtime.bundle.release.get("runtime_adapter")
-        frozen_original = (
-            runtime_adapter.get("frozen_original_commit")
-            if isinstance(runtime_adapter, dict)
-            else None
-        )
-        if (
-            not isinstance(frozen_original, str)
-            or re.fullmatch(r"[0-9a-f]{40}", frozen_original) is None
-        ):
-            raise RunnerError(
-                "comparator release omitted the frozen original commit authority"
-            )
-        original_commit = source_records.get("original", {}).get("source_commit")
-        candidate_commit = source_records.get("candidate", {}).get("source_commit")
-        if original_commit != frozen_original:
-            raise RunnerError(
-                "resolved original commit differs from the release-owned frozen original"
-            )
-        if (
-            not isinstance(candidate_commit, str)
-            or re.fullmatch(r"[0-9a-f]{40}", candidate_commit) is None
-        ):
-            raise RunnerError("holdout candidate did not resolve to an exact commit")
-        if candidate_commit == original_commit:
-            raise RunnerError("candidate commit must differ from the frozen original")
 
     @staticmethod
     def _assert_generic_holdout_source_authority(
@@ -2831,26 +2744,11 @@ class EvalRunner:
                 raise RunnerError(
                     "objective-only suites do not have comparator runtimes"
                 )
-            test_release = comparator.reviewed_adapter_id == "deterministic-fake"
+            test_release = comparator.adapter_id == "deterministic-fake"
             try:
-                if self.suite.schema_version == 2:
-                    self._comparator_runtime = ComparatorRuntime.load(
-                        self.suite.root / "skivolve" / "comparator_calibration",
-                        release_name=(
-                            "tests/test-release.json"
-                            if test_release
-                            else "release.json"
-                        ),
-                        allow_test_release=test_release,
-                    )
-                elif profile.kind == "builtin":
+                if profile.kind == "builtin":
                     certification_root, certification_name = (
-                        self._profile_certification_location(
-                            profile.id,
-                            legacy_compatible=(
-                                profile.id == BUILTIN_SOFTWARE_PROFILE_ID
-                            ),
-                        )
+                        self._profile_certification_location(profile.id)
                     )
                     self._comparator_runtime = ComparatorRuntime.load_builtin_profile(
                         profile.id,
@@ -2862,9 +2760,7 @@ class EvalRunner:
                     )
                 elif profile.kind == "suite_local" and profile.resources is not None:
                     certification_root, certification_name = (
-                        self._profile_certification_location(
-                            profile.id, legacy_compatible=False
-                        )
+                        self._profile_certification_location(profile.id)
                     )
                     self._comparator_runtime = (
                         ComparatorRuntime.load_diagnostic_profile(
@@ -2882,27 +2778,9 @@ class EvalRunner:
                 ) from exc
         return self._comparator_runtime
 
-    def _profile_certification_location(
-        self, profile_id: str, *, legacy_compatible: bool
-    ) -> tuple[Path, str]:
-        legacy_root = self.suite.root / "skivolve/comparator_calibration"
-        legacy_evidence = legacy_root / "evidence"
-        if legacy_compatible and legacy_root.is_symlink():
-            raise RunnerError("comparator certification root traverses a symlink")
-        if legacy_compatible and legacy_evidence.is_symlink():
-            raise RunnerError("comparator certification root traverses a symlink")
-        if (
-            legacy_compatible
-            and legacy_evidence.exists()
-            and not legacy_evidence.is_dir()
-        ):
-            raise RunnerError("comparator certification root must be a directory")
-        if legacy_compatible and legacy_root.is_dir():
-            logical = legacy_root
-            certification_name = "evidence/certification.json"
-        else:
-            logical = self.suite.root / "comparator-evidence" / profile_id
-            certification_name = "certification.json"
+    def _profile_certification_location(self, profile_id: str) -> tuple[Path, str]:
+        logical = self.suite.root / "comparator-evidence" / profile_id
+        certification_name = "certification.json"
         current = self.suite.root
         for part in logical.relative_to(self.suite.root).parts:
             current = current / part
@@ -2935,27 +2813,10 @@ class EvalRunner:
             raise RunnerError("case selection must not contain duplicates")
         if len(set(selection.comparison_ids)) != len(selection.comparison_ids):
             raise RunnerError("comparison selection must not contain duplicates")
-        release_comparison_ids = _release_comparison_ids(self.suite)
-        if selection.split == "holdout":
-            if (
-                self.suite.evaluation_mode == "objective_only"
-                and self.suite.schema_version < 5
-            ):
-                raise RunnerError("objective-only holdout authority is unavailable")
-            if allow_unsealed_holdout and selection.holdout_plan is not None:
-                raise RunnerError("holdout preparation cannot consume an existing plan")
-            if not allow_unsealed_holdout and selection.holdout_plan is None:
-                raise RunnerError("holdout execution requires an explicit holdout plan")
-            if selection.case_ids:
-                raise RunnerError("holdout execution forbids case filters")
-            if selection.seed is not None:
-                raise RunnerError("holdout execution forbids seed overrides")
-            if selection.comparison_ids != release_comparison_ids:
-                raise RunnerError(
-                    "holdout execution requires exactly the explicit comparisons "
-                    + ", ".join(release_comparison_ids)
-                )
-        else:
+        self._validate_holdout_selection_shape(
+            selection, allow_unsealed_holdout=allow_unsealed_holdout
+        )
+        if selection.split != "holdout":
             if selection.holdout_plan is not None:
                 raise RunnerError("a holdout plan may only be used with split=holdout")
             if not selection.verifier_only and len(selection.comparison_ids) != 1:
@@ -3005,44 +2866,20 @@ class EvalRunner:
                 )
                 for comparison in comparisons
             )
-            expected_profile = (
-                tuple(
-                    (identifier, control, treatment, 3, "ab_ba")
-                    for identifier, control, treatment in _HOLDOUT_COMPARISON_PROFILE
+            expected_profile = tuple(
+                (
+                    comparison.id,
+                    comparison.control,
+                    comparison.treatment,
+                    3,
+                    "ab_ba",
                 )
-                if self.suite.schema_version < 5
-                else tuple(
-                    (
-                        comparison.id,
-                        comparison.control,
-                        comparison.treatment,
-                        3,
-                        "ab_ba",
-                    )
-                    for comparison in comparisons
-                )
+                for comparison in comparisons
             )
             if observed_profile != expected_profile:
                 raise RunnerError(
                     "holdout comparison semantics differ from the release profile"
                 )
-            if self.suite.schema_version < 5:
-                variants_by_id = self.suite.variants_by_id
-                observed_variant_kinds = {
-                    identifier: variants_by_id.get(identifier).kind
-                    if variants_by_id.get(identifier) is not None
-                    else None
-                    for identifier in _HOLDOUT_VARIANT_KINDS
-                }
-                if observed_variant_kinds != _HOLDOUT_VARIANT_KINDS:
-                    raise RunnerError(
-                        "holdout variant kinds differ from the release profile"
-                    )
-                candidate_variant = variants_by_id["candidate"]
-                if candidate_variant.source_ref != "HEAD":
-                    raise RunnerError(
-                        "holdout candidate must resolve dynamically from worktree HEAD"
-                    )
             skills = {case.skill for case in cases}
             counts = {
                 skill: sum(case.skill == skill for case in cases) for skill in skills
@@ -3061,11 +2898,6 @@ class EvalRunner:
     ) -> None:
         if selection.split != "holdout":
             return
-        if (
-            self.suite.evaluation_mode == "objective_only"
-            and self.suite.schema_version < 5
-        ):
-            raise RunnerError("objective-only holdout authority is unavailable")
         if allow_unsealed_holdout and selection.holdout_plan is not None:
             raise RunnerError("holdout preparation cannot consume an existing plan")
         if not allow_unsealed_holdout and selection.holdout_plan is None:
@@ -3074,7 +2906,7 @@ class EvalRunner:
             raise RunnerError("holdout execution forbids case filters")
         if selection.seed is not None:
             raise RunnerError("holdout execution forbids seed overrides")
-        release_comparison_ids = _release_comparison_ids(self.suite)
+        release_comparison_ids = self.suite.holdout_comparison_ids
         if selection.comparison_ids != release_comparison_ids:
             raise RunnerError(
                 "holdout execution requires exactly the explicit comparisons "
@@ -3109,20 +2941,13 @@ class EvalRunner:
             raise RunnerError(
                 "holdout plan manifest hash does not match exact suite bytes"
             )
-        if self.suite.schema_version >= 6 and plan.schema_version != 4:
-            raise RunnerError(
-                "schema-v6 suites require schema-v4 provider authority plans"
-            )
-        if self.suite.schema_version < 6 and plan.schema_version == 4:
-            raise RunnerError(
-                "schema-v4 provider authority plans require a schema-v6 suite"
-            )
         if plan.evaluation_mode != self.suite.evaluation_mode:
             raise RunnerError("holdout plan evaluation mode does not match the suite")
         runtime: ComparatorRuntime | None = None
         if plan.evaluation_mode == "judged":
             runtime = self._load_comparator_runtime()
             self._require_production_holdout_authority(runtime)
+            self._assert_production_holdout_runtime(runtime)
             release_sha256 = runtime.release_summary["release_sha256"]
             if plan.comparator_release_sha256 != release_sha256:
                 raise RunnerError(
@@ -3143,9 +2968,7 @@ class EvalRunner:
                 plan.comparator_profile_descriptor_sha256,
                 plan.comparator_profile_authority_registry_sha256,
             )
-            if plan.schema_version == 3 and (
-                observed_profile_binding != expected_profile_binding
-            ):
+            if observed_profile_binding != expected_profile_binding:
                 raise RunnerError(
                     "holdout plan comparator profile authority does not match preflight"
                 )
@@ -3163,24 +2986,19 @@ class EvalRunner:
             raise RunnerError(
                 "holdout plan generator provider binding does not match preflight"
             )
-        if plan.schema_version == 4:
-            if (
-                plan.generator_adapter_binding is None
-                or plan.generator_adapter_binding.as_json()
-                != self._agent_authority_binding
-            ):
-                raise RunnerError(
-                    "holdout plan generator adapter authority does not match preflight"
-                )
-            observed_comparator_binding = (
-                plan.comparator_adapter_binding.as_json()
-                if plan.comparator_adapter_binding is not None
-                else None
+        if plan.generator_adapter_binding.as_json() != self._agent_authority_binding:
+            raise RunnerError(
+                "holdout plan generator adapter authority does not match preflight"
             )
-            if observed_comparator_binding != self._comparator_authority_binding:
-                raise RunnerError(
-                    "holdout plan comparator adapter authority does not match preflight"
-                )
+        observed_comparator_binding = (
+            plan.comparator_adapter_binding.as_json()
+            if plan.comparator_adapter_binding is not None
+            else None
+        )
+        if observed_comparator_binding != self._comparator_authority_binding:
+            raise RunnerError(
+                "holdout plan comparator adapter authority does not match preflight"
+            )
         if plan.seed != self.suite.seed:
             raise RunnerError("holdout plan seed does not match the suite seed")
         expected_profile = tuple(
@@ -3199,48 +3017,28 @@ class EvalRunner:
                 "holdout plan comparison profile does not match the suite"
             )
 
-        if plan.schema_version == 2:
-            if self.suite.schema_version >= 5:
-                raise RunnerError(
-                    "schema-v2 holdout plans cannot represent schema-v5 source authority"
-                )
-            candidate_commit = source_records.get("candidate", {}).get("source_commit")
-            original_commit = source_records.get("original", {}).get("source_commit")
-            assert runtime is not None
-            self._assert_holdout_source_authority(runtime, source_records)
-            if plan.candidate_commit != candidate_commit:
-                raise RunnerError(
-                    "holdout plan candidate commit does not match preflight"
-                )
-            if plan.original_commit != original_commit:
-                raise RunnerError(
-                    "holdout plan original commit does not match preflight"
-                )
-        else:
-            expected_bindings = tuple(
-                {
-                    "variant_id": variant_id,
-                    "kind": source_records[variant_id]["kind"],
-                    "source_commit": source_records[variant_id]["source_commit"],
-                    "source_sha256_by_case": {
-                        case_id: digest
-                        for case_id, digest in sorted(
-                            source_records[variant_id]["source_sha256_by_case"].items()
-                        )
-                    },
-                }
-                for variant_id in sorted(source_records)
+        expected_bindings = tuple(
+            {
+                "variant_id": variant_id,
+                "kind": source_records[variant_id]["kind"],
+                "source_commit": source_records[variant_id]["source_commit"],
+                "source_sha256_by_case": {
+                    case_id: digest
+                    for case_id, digest in sorted(
+                        source_records[variant_id]["source_sha256_by_case"].items()
+                    )
+                },
+            }
+            for variant_id in sorted(source_records)
+        )
+        observed_bindings = tuple(binding.as_json() for binding in plan.source_bindings)
+        if observed_bindings != expected_bindings:
+            raise RunnerError(
+                "holdout plan source bindings do not exactly match preflight"
             )
-            observed_bindings = tuple(
-                binding.as_json() for binding in plan.source_bindings
-            )
-            if observed_bindings != expected_bindings:
-                raise RunnerError(
-                    "holdout plan source bindings do not exactly match preflight"
-                )
-            self._assert_generic_holdout_source_authority(
-                comparisons, cases, source_records
-            )
+        self._assert_generic_holdout_source_authority(
+            comparisons, cases, source_records
+        )
 
         expected_cases = tuple(
             {
@@ -3323,7 +3121,7 @@ class EvalRunner:
                     self.suite.repository_root,
                     commit,
                     case.bundle_source,
-                    ignore_generated_caches=self.suite.schema_version >= 4,
+                    ignore_generated_caches=True,
                 )
                 for context_file in case.context_files:
                     _git_blob(self.suite.repository_root, commit, context_file)
@@ -3331,8 +3129,7 @@ class EvalRunner:
                     self.suite.repository_root,
                     commit,
                     case,
-                    ignore_generated_caches=self.suite.schema_version >= 4,
-                    canonical=self.suite.schema_version >= 5,
+                    ignore_generated_caches=True,
                 )
             return {
                 "kind": variant.kind,
@@ -3364,7 +3161,7 @@ class EvalRunner:
                 _scan_tree(
                     bundle_root,
                     ignore_generated_caches=True,
-                    ignore_empty_directories=self.suite.schema_version >= 4,
+                    ignore_empty_directories=True,
                 )
                 entrypoint = bundle_root / "SKILL.md"
                 if not entrypoint.is_file() or entrypoint.is_symlink():
@@ -3381,16 +3178,14 @@ class EvalRunner:
                     _worktree_source_fingerprint(
                         variant.root,
                         case,
-                        ignore_empty_directories=self.suite.schema_version >= 4,
-                        canonical=self.suite.schema_version >= 5,
+                        ignore_empty_directories=True,
                     )
                 )
                 expected_hash = _git_source_fingerprint(
                     variant.root,
                     source_commit,
                     case,
-                    ignore_generated_caches=self.suite.schema_version >= 4,
-                    canonical=self.suite.schema_version >= 5,
+                    ignore_generated_caches=True,
                 )
                 if self._worktree_hashes[(variant.id, case.id)] != expected_hash:
                     raise RunnerError(
@@ -3908,7 +3703,7 @@ class EvalRunner:
                 commit,
                 case.bundle_source,
                 snapshot,
-                ignore_generated_caches=self.suite.schema_version >= 4,
+                ignore_generated_caches=True,
             )
             for context_file in case.context_files:
                 content = _git_blob(self.suite.repository_root, commit, context_file)
@@ -3931,8 +3726,7 @@ class EvalRunner:
             observed_hash = _worktree_source_fingerprint(
                 variant.root,
                 case,
-                ignore_empty_directories=self.suite.schema_version >= 4,
-                canonical=self.suite.schema_version >= 5,
+                ignore_empty_directories=True,
             )
             if expected_hash is None or observed_hash != expected_hash:
                 raise RunnerError(
@@ -3943,7 +3737,7 @@ class EvalRunner:
                 bundle_source,
                 snapshot,
                 ignore_generated_caches=True,
-                ignore_empty_directories=self.suite.schema_version >= 4,
+                ignore_empty_directories=True,
             )
             for context_file in case.context_files:
                 context_path = _safe_repo_file(variant.root, context_file)
@@ -4027,9 +3821,7 @@ class EvalRunner:
         mounted_shared = runtime_mount / "_shared"
         mounted_tool_bin = runtime_mount / "tool-bin"
         mounted_artifact = runtime_mount / "artifact" / artifact.filename
-        shared_environment_enabled = (
-            self._shared_snapshot is not None or self.suite.schema_version < 4
-        )
+        shared_environment_enabled = self._shared_snapshot is not None
         shared_mount_enabled = self._shared_snapshot is not None
         _copy_tree(workspace, runtime_workspace)
         _write_bytes(runtime_artifact, artifact.content)
@@ -5019,23 +4811,16 @@ def _aggregate(
         )
         for comparison in comparisons
     )
-    release_comparison_ids = _release_comparison_ids(suite)
-    expected_holdout_profile = (
-        tuple(
-            (identifier, control, treatment, 3, "ab_ba")
-            for identifier, control, treatment in _HOLDOUT_COMPARISON_PROFILE
+    release_comparison_ids = suite.holdout_comparison_ids
+    expected_holdout_profile = tuple(
+        (
+            comparison.id,
+            comparison.control,
+            comparison.treatment,
+            3,
+            "ab_ba",
         )
-        if suite.schema_version < 5
-        else tuple(
-            (
-                comparison.id,
-                comparison.control,
-                comparison.treatment,
-                3,
-                "ab_ba",
-            )
-            for comparison in comparisons
-        )
+        for comparison in comparisons
     )
     selected_skills = frozenset(case.skill for case in selected_case_specs)
     holdout_skill_counts = {
@@ -5058,32 +4843,6 @@ def _aggregate(
         len({case.release_case_fingerprint for case in holdout_plan.cases})
         == len(holdout_plan.cases)
     )
-    provider_authority_bound = suite.schema_version < 6
-    if suite.schema_version >= 6 and holdout_plan is not None:
-        generator_binding = holdout_plan.generator_adapter_binding
-        generator_capabilities = capabilities_for(
-            suite.provider.reviewed_adapter_id, role="generation"
-        )
-        provider_authority_bound = bool(
-            generator_binding is not None
-            and generator_binding.adapter_id == generator_capabilities.adapter_id
-            and generator_binding.authority_scope == "production"
-            and generator_binding.capability_sha256 == generator_capabilities.sha256
-        )
-        if suite.evaluation_mode == "judged":
-            assert suite.comparator is not None
-            comparator_binding = holdout_plan.comparator_adapter_binding
-            comparator_capabilities = capabilities_for(
-                suite.comparator.reviewed_adapter_id, role="comparison"
-            )
-            provider_authority_bound = bool(
-                provider_authority_bound
-                and comparator_binding is not None
-                and comparator_binding.adapter_id == comparator_capabilities.adapter_id
-                and comparator_binding.authority_scope == "production"
-                and comparator_binding.capability_sha256
-                == comparator_capabilities.sha256
-            )
     suite_variants_by_id = suite.variants_by_id
     release_variant_ids = {
         variant_id
@@ -5094,25 +4853,16 @@ def _aggregate(
         identifier: suite_variants_by_id.get(identifier).kind
         if suite_variants_by_id.get(identifier) is not None
         else None
-        for identifier in (
-            sorted(release_variant_ids)
-            if suite.schema_version >= 5
-            else _HOLDOUT_VARIANT_KINDS
-        )
+        for identifier in sorted(release_variant_ids)
     }
-    expected_variant_kinds = (
-        holdout_variant_kinds if suite.schema_version >= 5 else _HOLDOUT_VARIANT_KINDS
-    )
     holdout_protocol_valid = selection.split != "holdout" or (
         holdout_plan is not None
         and release_authority_validated
         and generator_release_authoritative
-        and provider_authority_bound
         and selection.case_ids == ()
         and selection.seed is None
         and selection.comparison_ids == release_comparison_ids
         and holdout_profile == expected_holdout_profile
-        and holdout_variant_kinds == expected_variant_kinds
         and bool(selected_skills)
         and holdout_integrity_tree_uniqueness
         and holdout_task_content_uniqueness
@@ -5127,7 +4877,6 @@ def _aggregate(
         "applicable": selection.split == "holdout",
         "operator_declared_review_records_present": holdout_plan is not None,
         "generator_release_authoritative": generator_release_authoritative,
-        "provider_authority_bound": provider_authority_bound,
         "privacy_proof_claimed": False,
         "integrity_tree_uniqueness": holdout_integrity_tree_uniqueness,
         "exact_task_content_uniqueness": holdout_task_content_uniqueness,
@@ -5136,13 +4885,9 @@ def _aggregate(
         "variant_kinds": holdout_variant_kinds,
         "comparison_profile": [list(item) for item in holdout_profile],
     }
-    holdout_release_gate[
-        (
-            "production_judgment_authority_validated"
-            if suite.schema_version >= 5
-            else "production_comparator_release_validated"
-        )
-    ] = release_authority_validated
+    holdout_release_gate["production_judgment_authority_validated"] = (
+        release_authority_validated
+    )
     global_gates["holdout_release_protocol"] = holdout_release_gate
 
     by_comparison_skill: dict[str, dict[str, dict[str, Any]]] = {}
@@ -5243,10 +4988,7 @@ def _aggregate(
     } == set(release_comparison_ids)
     final_release_authorized = (
         selection.split == "holdout"
-        and (
-            not selection.verifier_only
-            or (suite.schema_version >= 5 and suite.evaluation_mode == "objective_only")
-        )
+        and (not selection.verifier_only or suite.evaluation_mode == "objective_only")
         and generator_release_authoritative
         and both_candidate_comparisons_present
         and candidate_cell_keys == expected_candidate_cell_keys
@@ -5886,46 +5628,27 @@ def _worktree_source_fingerprint(
     root: Path,
     case: CaseSpec,
     *,
-    ignore_empty_directories: bool = False,
-    canonical: bool = False,
+    ignore_empty_directories: bool = True,
 ) -> str:
     bundle_root = _safe_repo_file(root, case.bundle_source)
-    if canonical:
-        context_states: dict[str, _FileState] = {}
-        for context_file in case.context_files:
-            path = _safe_repo_file(root, context_file)
-            if not path.is_file() or path.is_symlink():
-                raise RunnerError(f"worktree context file is missing: {context_file}")
-            metadata = path.stat()
-            context_states[context_file.as_posix()] = _FileState(
-                path.read_bytes(), bool(metadata.st_mode & stat.S_IXUSR)
-            )
-        return _canonical_source_fingerprint(
-            case.bundle_source,
-            _read_tree(
-                bundle_root,
-                ignore_generated_caches=True,
-                ignore_empty_directories=ignore_empty_directories,
-            ),
-            context_states,
-        )
-    digest = hashlib.sha256()
-    digest.update(
-        _tree_hash(
-            bundle_root,
-            ignore_generated_caches=True,
-            ignore_empty_directories=ignore_empty_directories,
-        ).encode("ascii")
-    )
+    context_states: dict[str, _FileState] = {}
     for context_file in case.context_files:
         path = _safe_repo_file(root, context_file)
         if not path.is_file() or path.is_symlink():
             raise RunnerError(f"worktree context file is missing: {context_file}")
-        digest.update(str(context_file).encode("utf-8"))
-        digest.update(b"\0")
-        digest.update(path.read_bytes())
-        digest.update(b"\0")
-    return digest.hexdigest()
+        metadata = path.stat()
+        context_states[context_file.as_posix()] = _FileState(
+            path.read_bytes(), bool(metadata.st_mode & stat.S_IXUSR)
+        )
+    return _canonical_source_fingerprint(
+        case.bundle_source,
+        _read_tree(
+            bundle_root,
+            ignore_generated_caches=True,
+            ignore_empty_directories=ignore_empty_directories,
+        ),
+        context_states,
+    )
 
 
 def _git_source_fingerprint(
@@ -5933,8 +5656,7 @@ def _git_source_fingerprint(
     commit: str,
     case: CaseSpec,
     *,
-    ignore_generated_caches: bool = False,
-    canonical: bool = False,
+    ignore_generated_caches: bool = True,
 ) -> str:
     prefix = case.bundle_source
     bundle_states: dict[str, _FileState] = {}
@@ -5948,23 +5670,14 @@ def _git_source_fingerprint(
         bundle_states[relative] = _FileState(
             _git_blob(root, commit, entry.path), entry.mode == "100755"
         )
-    if canonical:
-        return _canonical_source_fingerprint(
-            case.bundle_source,
-            bundle_states,
-            {
-                context_file.as_posix(): _git_file_state(root, commit, context_file)
-                for context_file in case.context_files
-            },
-        )
-    digest = hashlib.sha256()
-    digest.update(_states_hash(bundle_states).encode("ascii"))
-    for context_file in case.context_files:
-        digest.update(str(context_file).encode("utf-8"))
-        digest.update(b"\0")
-        digest.update(_git_blob(root, commit, context_file))
-        digest.update(b"\0")
-    return digest.hexdigest()
+    return _canonical_source_fingerprint(
+        case.bundle_source,
+        bundle_states,
+        {
+            context_file.as_posix(): _git_file_state(root, commit, context_file)
+            for context_file in case.context_files
+        },
+    )
 
 
 def _canonical_source_fingerprint(
@@ -5978,7 +5691,7 @@ def _canonical_source_fingerprint(
         _canonical_json_bytes(
             {
                 "bundle_source": bundle_source.as_posix(),
-                "schema_version": 2,
+                "schema_version": 1,
             }
         )
     )
@@ -6003,11 +5716,8 @@ def _canonical_source_fingerprint(
 
 
 def _effective_shared_verifier_dir(suite: SuiteSpec) -> Path | None:
-    configured = suite.shared_verifier_dir
-    if configured is None and suite.schema_version >= 4:
-        return None
-    logical = configured or (suite.root / "cases" / "testing" / "_shared")
-    if configured is None and not logical.exists() and not logical.is_symlink():
+    logical = suite.shared_verifier_dir
+    if logical is None:
         return None
     try:
         relative = logical.relative_to(suite.root)
@@ -6064,6 +5774,7 @@ def _release_case_fingerprint(
             ),
         }
     payload = {
+        "artifact_contract": {"kind": case.artifact_contract.kind},
         "comparator_contract": contract,
         "context_content_sha256s": {
             role: sorted(hashes)
@@ -6075,9 +5786,6 @@ def _release_case_fingerprint(
         "schema_version": 1,
         "skill": case.skill,
     }
-    if case.artifact_contract.declared:
-        payload["artifact_contract"] = {"kind": case.artifact_contract.kind}
-        payload["schema_version"] = 2
     return _sha256(_canonical_json_bytes(payload))
 
 

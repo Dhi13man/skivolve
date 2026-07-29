@@ -18,7 +18,7 @@ from typing import Any, BinaryIO, Iterator, Mapping
 from . import comparator_calibration, plain_language_calibration
 
 
-BUILTIN_SOFTWARE_PROFILE_ID = "software-engineering-v2.3"
+BUILTIN_SOFTWARE_PROFILE_ID = "software-engineering-v1"
 BUILTIN_PLAIN_LANGUAGE_PROFILE_ID = "plain-language-revision-v1"
 MAX_PROFILE_DESCRIPTOR_BYTES = 64 * 1024
 MAX_PROFILE_RESOURCE_BYTES = 4 * 1024 * 1024
@@ -198,7 +198,7 @@ def parse_profile_descriptor(
     }
     if set(value) != expected:
         raise ComparatorProfileError("profile descriptor fields are invalid")
-    if type(value["schema_version"]) is not int or value["schema_version"] != 2:
+    if type(value["schema_version"]) is not int or value["schema_version"] != 1:
         raise ComparatorProfileError("profile descriptor schema version is invalid")
     profile_id = value["id"]
     if (
@@ -250,7 +250,7 @@ def parse_profile_descriptor(
             "profile supported artifact kinds must be ['workspace_diff']"
         )
     return ComparatorProfileDescriptor(
-        schema_version=2,
+        schema_version=1,
         id=profile_id,
         version=version,
         engine_contract=engine_contract,
@@ -389,7 +389,7 @@ def _authority_binding(profile_id: str) -> ComparatorProfileAuthorityBinding:
     registry = _strict_json_object(registry_bytes, "profile authority registry")
     if (
         set(registry) != {"schema_version", "profiles"}
-        or registry["schema_version"] != 2
+        or registry["schema_version"] != 1
     ):
         raise ComparatorProfileError("profile authority registry fields are invalid")
     profiles = registry["profiles"]
@@ -495,7 +495,7 @@ def _validate_release_resources(
     }
     semantic_contract = parsed["semantic_contract"]
     compatible_engine_contracts = {
-        "software-change-comparator-v2.3": "eligibility-pareto-v1",
+        "software-change-comparator-v1": "eligibility-pareto-v1",
         "eligibility-pareto-v1": "eligibility-pareto-v1",
     }
     if compatible_engine_contracts.get(

@@ -1,6 +1,6 @@
 {
-  "rubric_id": "software-engineering-comparator-rubric-v3",
-  "version": "2.3.0",
+  "rubric_id": "software-engineering-comparator-rubric-v1",
+  "version": "1.0.0",
   "criteria": [
     {
       "id": "functional_correctness",

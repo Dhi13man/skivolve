@@ -1,8 +1,8 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "manifest.schema.json",
-  "x-artifact-version": "2.3.0",
-  "title": "Comparator calibration corpus v2",
+  "x-artifact-version": "1.0.0",
+  "title": "Comparator calibration corpus v1",
   "type": "object",
   "additionalProperties": false,
   "required": ["$schema", "schema_version", "corpus_id", "review_policy", "pairs"],
@@ -11,10 +11,10 @@
       "const": "manifest.schema.json"
     },
     "schema_version": {
-      "const": 2
+      "const": 1
     },
     "corpus_id": {
-      "const": "software-engineering-comparator-v2"
+      "const": "software-engineering-comparator-v1"
     },
     "review_policy": {
       "type": "object",
@@ -29,7 +29,7 @@
       "properties": {
         "historical_rubric_version": {"const": "2.0.0"},
         "effective_rubric_version": {"const": "2.1.0"},
-        "scoring_protocol_version": {"const": "2.3.0"},
+        "scoring_protocol_version": {"const": "1.0.0"},
         "resolution_authority": {"const": "resolution-reviewer-v2"},
         "history_rule": {"type": "string", "minLength": 40}
       }

@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "response.schema.json",
-  "x-artifact-version": "2.3.0",
+  "x-artifact-version": "1.0.0",
   "title": "Locked comparator response",
   "type": "object",
   "additionalProperties": false,

@@ -23,7 +23,7 @@ PROJECT_ROOT = ROOT.parents[1]
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from calibration import (  # noqa: E402
+from skivolve.comparator_calibration.calibration import (  # noqa: E402
     CRITERIA,
     Bundle,
     CalibrationError,
@@ -42,13 +42,19 @@ from calibration import (  # noqa: E402
     require_baseline_authority,
     validate_locked_documents,
     validate_manifest,
+    validate_packaged_release_bindings,
     validate_release,
     validate_response,
     validate_rubric,
     validate_semantic_contract,
 )
-import collect as collector  # noqa: E402
-from collect import _header, _provider_output, _resume_trials, _write_checkpoint  # noqa: E402
+from skivolve.comparator_calibration import collect as collector  # noqa: E402
+from skivolve.comparator_calibration.collect import (  # noqa: E402
+    _header,
+    _provider_output,
+    _resume_trials,
+    _write_checkpoint,
+)
 from skivolve.comparator_runtime import (  # noqa: E402
     ComparatorRuntime,
     RuntimeCertification,
@@ -375,7 +381,7 @@ def build_evidence(
                 trial["stdin_sha256"] = transport_hashes["stdin_sha256"]
     artifacts = release["artifacts"]
     return {
-        "schema_version": 2,
+        "schema_version": 1,
         "release_sha256": release["release_sha256"],
         "corpus_sha256": artifacts["corpus_sha256"],
         "rubric_sha256": artifacts["rubric_sha256"],
@@ -458,28 +464,35 @@ class CalibrationTestCase(unittest.TestCase):
 
 
 class CorpusTests(CalibrationTestCase):
-    def test_software_profile_semantic_assets_preserve_v23_bytes(self) -> None:
-        expected = {
-            "rubric.json": "f1a693791fbf740a75ba121b695083c6f2050caf553f36b6fb30c109ec9cc35f",
-            "request-template.json": "6bb1d479fe4192d6531088ab25604c873e3f6b53a08506e40eb6c8fc482489be",
-            "response.schema.json": "7cb820f39825cab25afb53995a14d88b78af0657cd3feaef7c0d0f8c40b234ed",
-            "evidence.schema.json": "bbd14f10b83d4407c1a34cf066843bc71d10ab08f9ef1f5a178dde5d4ae08b1f",
-            "manifest.json": "ecb14190636c770d2f5de40286a0b2d9093fef0cd31612df89ae01fb29b364b5",
-        }
-
-        self.assertEqual(
-            {
-                name: hashlib.sha256((ROOT / name).read_bytes()).hexdigest()
-                for name in expected
-            },
-            expected,
-        )
-
-    def test_software_requests_and_normalized_decisions_preserve_v23_behavior(
+    def test_semantic_assets_when_active_contract_is_v1_match_locked_bytes(
         self,
     ) -> None:
+        # Arrange
+        expected = {
+            "rubric.json": "dbd7ef3e95c6533ebb79282ae7b4f1f582d54db99ed813e3f5ff0b3b230f1374",
+            "request-template.json": "664bfed2b3ca52881fc0ac55d39f1ed7df80d66ba52c2084e5aeb861847f8350",
+            "response.schema.json": "f7aad1d1188261ae5a99babccdfcd244cc8e85ae879b2261d1ff12bc7f0c25cf",
+            "evidence.schema.json": "48acdc90136e871ab9cea000c76f2ec94c517ed4466d6cba5beb57f5b4a9c265",
+            "manifest.json": "80dbbad57d467356c08e32171ce5992480fea5049462476aa9ef19169498a9e2",
+        }
+
+        # Act
+        observed = {
+            name: hashlib.sha256((ROOT / name).read_bytes()).hexdigest()
+            for name in expected
+        }
+
+        # Assert
+        self.assertEqual(observed, expected)
+
+    def test_requests_and_decisions_when_active_contract_is_v1_preserve_behavior(
+        self,
+    ) -> None:
+        # Arrange
         request_hashes = []
         decisions = []
+
+        # Act
         for pair in self.bundle.manifest["pairs"]:
             for repetition in range(pair["repetitions"]):
                 for order in ("AB", "BA"):
@@ -498,10 +511,11 @@ class CorpusTests(CalibrationTestCase):
                     )
                 )
 
+        # Assert
         self.assertEqual(len(request_hashes), 100)
         self.assertEqual(
             canonical_sha256(request_hashes),
-            "340c04ff41f7e657a24761b1db21975faf04977a68052e166a14fd30e949ecfa",
+            "35f81b0346b8eb30f1b825f48b3c12ee3b18af33c9686022e319f5e977fe3aed",
         )
         self.assertEqual(len(decisions), 60)
         self.assertEqual(
@@ -866,13 +880,20 @@ class CorpusTests(CalibrationTestCase):
         with self.assertRaisesRegex(CalibrationError, "response.criteria"):
             validate_response(bundle, pair, response, "AB")
 
-    def test_corpus_is_balanced_adjudicated_and_multilingual(self) -> None:
+    def test_validate_manifest_when_corpus_is_current_reports_balanced_adjudicated_multilingual_summary(
+        self,
+    ) -> None:
+        # Arrange
+        bundle = self.bundle
+
+        # Act
         summary = validate_manifest(
-            self.bundle.manifest,
-            self.bundle.rubric,
-            self.bundle.semantic_contract,
+            bundle.manifest,
+            bundle.rubric,
+            bundle.semantic_contract,
         )
 
+        # Assert
         self.assertEqual(summary["pair_count"], 30)
         self.assertEqual(summary["raw_trial_count"], 100)
         self.assertEqual(
@@ -881,6 +902,13 @@ class CorpusTests(CalibrationTestCase):
         )
         self.assertEqual(summary["patch_totals"]["patches"], 60)
         self.assertTrue(summary["adjudication_complete"])
+        self.assertEqual(
+            summary["status_expansion_pairs"],
+            [
+                "typescript-declared-dependency-a",
+                "typescript-api-dependency-both-ineligible",
+            ],
+        )
         self.assertEqual(
             summary["re_review_disagreements"],
             ["javascript-hot-regex-tradeoff"],
@@ -956,6 +984,31 @@ class CorpusTests(CalibrationTestCase):
                 mutated, self.bundle.rubric, self.bundle.semantic_contract
             )
 
+    def test_validate_manifest_when_scoring_gold_statuses_are_invalid_fails_closed(
+        self,
+    ) -> None:
+        mutations = {
+            "missing statuses": lambda decision: decision.pop("requirement_statuses"),
+            "inconsistent statuses": lambda decision: decision[
+                "requirement_statuses"
+            ].__setitem__(next(iter(decision["requirement_statuses"])), "violated"),
+        }
+
+        for name, mutate in mutations.items():
+            with self.subTest(name=name):
+                # Arrange
+                manifest = copy.deepcopy(self.bundle.manifest)
+                decision = manifest["pairs"][0]["adjudication"]["scoring_gold"][
+                    "eligibility"
+                ]["A"]
+                mutate(decision)
+
+                # Act + Assert
+                with self.assertRaises(CalibrationError):
+                    validate_manifest(
+                        manifest, self.bundle.rubric, self.bundle.semantic_contract
+                    )
+
     def test_performance_winner_requires_a_typed_basis(self) -> None:
         mutated = copy.deepcopy(self.bundle.manifest)
         pair = next(
@@ -976,10 +1029,16 @@ class CorpusTests(CalibrationTestCase):
             with self.assertRaisesRegex(CalibrationError, "duplicate JSON key"):
                 load_json(path)
 
-    def test_release_pins_real_production_model_and_full_config(self) -> None:
+    def test_validate_release_when_production_lock_is_current_pins_model_and_full_configuration(
+        self,
+    ) -> None:
+        # Arrange
         production = load_bundle(ROOT)
+
+        # Act
         summary = validate_release(production)
 
+        # Assert
         self.assertFalse(summary["test_release"])
         self.assertEqual(
             production.release["judge"]["requested_model"], "claude-sonnet-5"
@@ -992,9 +1051,6 @@ class CorpusTests(CalibrationTestCase):
         self.assertIn("manifest_schema_sha256", summary["artifacts"])
         self.assertIn("holdout_plan_schema_sha256", summary["artifacts"])
         self.assertIn("holdout_plan_schema_bytes_sha256", summary["artifacts"])
-        self.assertTrue(
-            production.release["runtime_adapter"]["shared_harness_compatible"]
-        )
         self.assertEqual(
             production.release["runtime_adapter"]["id"],
             "shared-harness-claude-cli-v1",
@@ -1070,6 +1126,73 @@ class CorpusTests(CalibrationTestCase):
             CalibrationError, "artifact_normalizer.*source hash is stale"
         ):
             validate_release(dataclasses.replace(self.bundle, release=release))
+
+    def test_validate_release_when_removed_compatibility_fields_are_present_rejects_release(
+        self,
+    ) -> None:
+        mutations = {
+            "gold source": lambda release: release.__setitem__(
+                "gold_source", "scoring_gold"
+            ),
+            "runtime compatibility": lambda release: release[
+                "runtime_adapter"
+            ].__setitem__("shared_harness_compatible", True),
+            "runtime blocker": lambda release: release["runtime_adapter"].__setitem__(
+                "blocker", None
+            ),
+        }
+
+        for name, mutate in mutations.items():
+            with self.subTest(name=name):
+                # Arrange
+                release = copy.deepcopy(self.bundle.release)
+                mutate(release)
+
+                # Act + Assert
+                with self.assertRaisesRegex(CalibrationError, "keys differ"):
+                    validate_release(dataclasses.replace(self.bundle, release=release))
+
+    def test_validate_packaged_release_bindings_when_suite_schema_is_current_accepts_release(
+        self,
+    ) -> None:
+        # Arrange
+        suite_manifest = PROJECT_ROOT / "suite.json"
+        runtime_source_root = PROJECT_ROOT / "skivolve"
+
+        # Act
+        result = validate_packaged_release_bindings(
+            self.bundle,
+            suite_manifest_path=suite_manifest,
+            runtime_source_root=runtime_source_root,
+        )
+
+        # Assert
+        self.assertIsNone(result)
+
+    def test_validate_packaged_release_bindings_when_suite_schema_is_noncurrent_rejects_release(
+        self,
+    ) -> None:
+        for schema_version in (False, True, 0, 2, 3, 4, 5, 6, 7, 8):
+            with self.subTest(schema_version=schema_version):
+                # Arrange
+                suite = load_json(PROJECT_ROOT / "suite.json")
+                suite["schema_version"] = schema_version
+                with tempfile.TemporaryDirectory() as temporary:
+                    suite_manifest = Path(temporary) / "suite.json"
+                    suite_manifest.write_text(
+                        json.dumps(suite),
+                        encoding="utf-8",
+                    )
+
+                    # Act + Assert
+                    with self.assertRaisesRegex(
+                        CalibrationError, "schema_version must be 1"
+                    ):
+                        validate_packaged_release_bindings(
+                            self.bundle,
+                            suite_manifest_path=suite_manifest,
+                            runtime_source_root=PROJECT_ROOT / "skivolve",
+                        )
 
     def test_baseline_authority_rejects_suite_only_alternate_commit(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -1290,11 +1413,17 @@ class EvidenceTests(CalibrationTestCase):
             finally:
                 packaged.close()
 
-    def test_successor_release_uses_shared_runtime(self) -> None:
+    def test_evaluate_evidence_when_successor_release_uses_shared_runtime_omits_legacy_gate(
+        self,
+    ) -> None:
+        # Arrange
         production = load_bundle(ROOT)
+
+        # Act
         result = evaluate_evidence(production, build_evidence(production))
 
-        self.assertTrue(result["gates"]["runtime_adapter_compatibility"])
+        # Assert
+        self.assertNotIn("runtime_adapter_compatibility", result["gates"])
         self.assertFalse(result["passed"])
 
     def test_gold_evidence_passes_on_distinct_pairs(self) -> None:

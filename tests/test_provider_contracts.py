@@ -125,18 +125,31 @@ class ProviderResultContractTests(unittest.TestCase):
         with self.assertRaisesRegex(ProviderError, "non-negative"):
             result.as_json()
 
-    def test_execution_policies_are_exact_immutable_and_provider_visible(self) -> None:
-        concurrent = execution_policy_for("claude")
-        self.assertIs(concurrent, execution_policy_for("fake"))
+    def test_execution_policy_when_adapter_is_reviewed_is_exact_immutable_and_visible(
+        self,
+    ) -> None:
+        # Arrange
+        concurrent = execution_policy_for("claude-cli")
+
+        # Act
+        fake_policy = execution_policy_for("deterministic-fake")
+        codex_policy = execution_policy_for("codex-app-server")
+
+        # Assert
+        self.assertIs(concurrent, fake_policy)
         self.assertEqual(
             concurrent.as_json(),
             {"concurrency": "concurrent", "release_authoritative": True},
         )
         self.assertEqual(FakeProvider().execution_policy, concurrent)
         self.assertEqual(
-            execution_policy_for("codex").as_json(),
+            codex_policy.as_json(),
             {"concurrency": "serialized", "release_authoritative": False},
         )
+        for legacy_kind in ("claude", "codex", "fake"):
+            with self.subTest(legacy_kind=legacy_kind):
+                with self.assertRaisesRegex(ProviderError, "unknown reviewed"):
+                    execution_policy_for(legacy_kind)
         with self.assertRaises(FrozenInstanceError):
             concurrent.concurrency = "serialized"  # type: ignore[misc]
         with self.assertRaisesRegex(ValueError, "unsupported"):
@@ -144,18 +157,29 @@ class ProviderResultContractTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "unsupported"):
             ProviderExecutionPolicy("concurrent", 1)  # type: ignore[arg-type]
 
-    def test_reviewed_adapter_capabilities_are_canonical_and_role_closed(self) -> None:
+    def test_reviewed_capabilities_when_registry_is_loaded_are_canonical_and_role_closed(
+        self,
+    ) -> None:
+        # Arrange
         registry = reviewed_capabilities()
+
+        # Act
+        capability_hashes = {capabilities.sha256 for capabilities in registry.values()}
+
+        # Assert
         self.assertEqual(
             set(registry),
             {"claude-cli", "codex-app-server", "deterministic-fake"},
         )
-        self.assertEqual(
-            len({capabilities.sha256 for capabilities in registry.values()}), 3
-        )
+        self.assertEqual(len(capability_hashes), 3)
         for adapter_id, capabilities in registry.items():
             with self.subTest(adapter_id=adapter_id):
                 self.assertEqual(capabilities.adapter_id, adapter_id)
+                self.assertEqual(
+                    capabilities.as_json()["provider_kind"],
+                    capabilities.provider_kind,
+                )
+                self.assertNotIn("legacy_kind", capabilities.as_json())
                 self.assertEqual(
                     capabilities.sha256, canonical_sha256(capabilities.as_json())
                 )
@@ -163,10 +187,7 @@ class ProviderResultContractTests(unittest.TestCase):
                     capabilities.artifact_outputs,
                     ("final_output_json", "final_output_text", "workspace_diff"),
                 )
-                self.assertEqual(
-                    capabilities.contract_revision,
-                    3 if adapter_id == "claude-cli" else 2,
-                )
+                self.assertEqual(capabilities.contract_revision, 1)
         self.assertEqual(
             capabilities_for("claude-cli", role="comparison").authority_scope,
             "production",
@@ -706,17 +727,23 @@ class ManifestProviderContractTests(unittest.TestCase):
             '{"schema_version":1}\n', encoding="utf-8"
         )
         self.manifest = {
-            "schema_version": 2,
+            "schema_version": 1,
             "suite_id": "provider-contract",
             "seed": 1,
             "repository_root": ".",
+            "evaluation_mode": "judged",
             "provider": self.codex_provider(),
             "comparator": {
-                "kind": "fake",
+                "adapter": "deterministic-fake",
                 "model": "fake-comparator",
                 "timeout_seconds": 30,
                 "max_budget_usd": 1.0,
             },
+            "comparator_profile": {
+                "kind": "builtin",
+                "id": "software-engineering-v1",
+            },
+            "shared_verifier_dir": None,
             "variants": [
                 {"id": "without", "kind": "without_skill"},
                 {
@@ -735,10 +762,13 @@ class ManifestProviderContractTests(unittest.TestCase):
                     "comparator_order": "ab_ba",
                 }
             ],
+            "holdout": {"comparison_ids": ["without-candidate"]},
             "cases": [
                 {
                     "id": "case",
                     "skill": "engineering",
+                    "bundle_source": "skills/engineering",
+                    "artifact_contract": {"kind": "workspace_diff"},
                     "split": "validation",
                     "prompt_file": "prompt.md",
                     "fixture_dir": "fixture",
@@ -771,7 +801,7 @@ class ManifestProviderContractTests(unittest.TestCase):
     @staticmethod
     def codex_provider() -> dict[str, object]:
         return {
-            "kind": "codex",
+            "adapter": "codex-app-server",
             "executable": "codex",
             "model": "gpt-5.6-luna",
             "reasoning_effort": "max",
@@ -793,10 +823,17 @@ class ManifestProviderContractTests(unittest.TestCase):
         with self.assertRaises(ManifestError):
             load_suite(self.save(payload))
 
-    def test_codex_luna_and_terra_require_explicit_supported_effort_and_provenance(
+    def test_load_suite_when_codex_model_is_supported_binds_effort_and_provenance(
         self,
     ) -> None:
-        suite = load_suite(self.save())
+        # Arrange
+        path = self.save()
+
+        # Act
+        suite = load_suite(path)
+
+        # Assert
+        self.assertEqual(suite.provider.adapter_id, "codex-app-server")
         self.assertEqual(suite.provider.reasoning_effort, "max")
         self.assertEqual(suite.provider.billing_basis, "chatgpt_subscription")
         self.assertEqual(
@@ -810,17 +847,29 @@ class ManifestProviderContractTests(unittest.TestCase):
             "model": "gpt-5.6-terra",
             "reasoning_effort": "ultra",
         }
-        self.assertEqual(load_suite(self.save()).provider.reasoning_effort, "ultra")
+        terra = load_suite(self.save())
 
-    def test_existing_claude_manifest_defaults_to_metered_provenance(self) -> None:
-        suite = load_suite(HARNESS_ROOT / "suite.json")
+        self.assertEqual(terra.provider.reasoning_effort, "ultra")
+
+    def test_load_suite_when_existing_claude_manifest_is_loaded_defaults_to_metered_provenance(
+        self,
+    ) -> None:
+        # Arrange
+        path = HARNESS_ROOT / "suite.json"
+
+        # Act
+        suite = load_suite(path)
+
+        # Assert
+        self.assertEqual(suite.provider.adapter_id, "claude-cli")
         self.assertEqual(suite.provider.billing_basis, "metered_api")
         self.assertIsNone(suite.provider.reasoning_effort)
         self.assertIsNone(suite.provider.protocol_lock)
 
-    def test_codex_manifest_parser_and_schema_reject_cross_field_mutations(
+    def test_load_suite_when_codex_provider_fields_conflict_rejects_schema_and_parser(
         self,
     ) -> None:
+        # Arrange
         mutations: list[dict[str, object]] = []
         for missing in (
             "executable",
@@ -843,22 +892,43 @@ class ManifestProviderContractTests(unittest.TestCase):
             payload["provider"].update(changes)  # type: ignore[union-attr]
             mutations.append(payload)
 
+        # Act + Assert
         for payload in mutations:
             with self.subTest(provider=payload["provider"]):
                 self.assert_schema_and_parser_reject(payload)
 
-    def test_codex_is_never_accepted_as_comparator(self) -> None:
+    def test_load_suite_when_codex_is_configured_as_comparator_rejects_manifest(
+        self,
+    ) -> None:
+        # Arrange
         payload = copy.deepcopy(self.manifest)
         payload["comparator"] = self.codex_provider()
+
+        # Act + Assert
         self.assert_schema_and_parser_reject(payload)
 
-    def test_all_timeout_boundaries_reject_3601_in_schema_and_parser(self) -> None:
+    def test_load_suite_when_fake_provider_sets_executable_rejects_schema_and_parser(
+        self,
+    ) -> None:
+        # Arrange
+        payload = copy.deepcopy(self.manifest)
+        payload["comparator"]["executable"] = "fake"  # type: ignore[index]
+
+        # Act + Assert
+        self.assert_schema_and_parser_reject(payload)
+
+    def test_load_suite_when_timeout_exceeds_limit_rejects_schema_and_parser(
+        self,
+    ) -> None:
+        # Arrange
         mutations = (
             ("provider",),
             ("comparator",),
             ("cases", 0),
             ("cases", 0, "verifier"),
         )
+
+        # Act + Assert
         for path in mutations:
             payload = copy.deepcopy(self.manifest)
             target: object = payload
@@ -868,12 +938,14 @@ class ManifestProviderContractTests(unittest.TestCase):
             with self.subTest(path=path):
                 self.assert_schema_and_parser_reject(payload)
 
-    def test_protocol_lock_symlink_is_rejected_by_strict_loader(self) -> None:
+    def test_load_suite_when_protocol_lock_is_symlink_rejects_manifest(self) -> None:
+        # Arrange
         link = self.root / "linked-lock.json"
         link.symlink_to(self.root / "codex-protocol-lock.json")
         payload = copy.deepcopy(self.manifest)
         payload["provider"]["protocol_lock"] = link.name  # type: ignore[index]
 
+        # Act + Assert
         with self.assertRaisesRegex(ManifestError, "non-symlink"):
             load_suite(self.save(payload))
 
@@ -887,13 +959,21 @@ class HoldoutProviderContractTests(unittest.TestCase):
         self.schema = json.loads(
             (HARNESS_ROOT / "holdout-plan.schema.json").read_text(encoding="utf-8")
         )
+        case_ids = [f"case-{index}" for index in range(8)]
+        generator_binding = self.adapter_binding(
+            "generation", adapter_id="codex-app-server", authority_scope="diagnostic"
+        )
         self.payload = {
-            "schema_version": 2,
+            "schema_version": 1,
             "plan_id": "provider-holdout",
             "status": "sealed",
             "manifest_sha256": "a" * 64,
+            "evaluation_mode": "judged",
             "comparator_release_sha256": "b" * 64,
-            "comparator_calibration_evidence_sha256": None,
+            "comparator_calibration_evidence_sha256": "3" * 64,
+            "comparator_profile_id": "software-engineering-v1",
+            "comparator_profile_descriptor_sha256": "4" * 64,
+            "comparator_profile_authority_registry_sha256": "5" * 64,
             "generator_provider": {
                 "name": "codex-app-server",
                 "version": "codex-cli 0.144.1",
@@ -908,8 +988,30 @@ class HoldoutProviderContractTests(unittest.TestCase):
                     "release_authoritative": False,
                 },
             },
-            "candidate_commit": "e" * 40,
-            "original_commit": "f" * 40,
+            "generator_adapter_binding": generator_binding,
+            "comparator_adapter_binding": self.adapter_binding(
+                "comparison",
+                adapter_id="deterministic-fake",
+                authority_scope="test",
+            ),
+            "source_bindings": [
+                {
+                    "variant_id": "candidate",
+                    "kind": "worktree",
+                    "source_commit": "e" * 64,
+                    "source_sha256_by_case": {
+                        case_id: "1" * 64 for case_id in case_ids
+                    },
+                },
+                {
+                    "variant_id": "original",
+                    "kind": "git_ref",
+                    "source_commit": "f" * 40,
+                    "source_sha256_by_case": {
+                        case_id: "2" * 64 for case_id in case_ids
+                    },
+                },
+            ],
             "consumption_record_path": str((self.root / "consumption.json").resolve()),
             "seed": 1,
             "comparison_profile": [
@@ -923,17 +1025,17 @@ class HoldoutProviderContractTests(unittest.TestCase):
             ],
             "cases": [
                 {
-                    "id": f"case-{index}",
+                    "id": case_id,
                     "case_tree_sha256": f"{index + 1:064x}",
                     "shared_tree_sha256": None,
                     "release_case_fingerprint": f"{index + 101:064x}",
                     "skill": "engineering",
                     "critical_expectations": ["correct"],
                 }
-                for index in range(8)
+                for index, case_id in enumerate(case_ids)
             ],
             "provenance": {
-                "assurance": "trusted-reviewed-attestation",
+                "assurance": "operator-declared-review-records",
                 "privacy_claim": "not-a-cryptographic-privacy-proof",
                 "frozen_before_candidate_evaluation": True,
                 "sealed_after_independent_review": True,
@@ -941,6 +1043,21 @@ class HoldoutProviderContractTests(unittest.TestCase):
                 "freeze_record": "review:freeze",
                 "seal_record": "review:seal",
             },
+        }
+
+    @staticmethod
+    def adapter_binding(
+        role: str, *, adapter_id: str, authority_scope: str
+    ) -> dict[str, object]:
+        return {
+            "adapter_id": adapter_id,
+            "authority_scope": authority_scope,
+            "binding_sha256": "7" * 64,
+            "capability_sha256": "8" * 64,
+            "config_sha256": "9" * 64,
+            "contract_revision": 1,
+            "role": role,
+            "runtime_provenance_sha256": "a" * 64,
         }
 
     def save(self, payload: dict[str, object]) -> None:
@@ -956,11 +1073,16 @@ class HoldoutProviderContractTests(unittest.TestCase):
         with self.assertRaises(HoldoutPlanError):
             load_holdout_plan(self.path)
 
-    def test_subscription_binding_round_trips_complete_execution_provenance(
+    def test_load_holdout_plan_when_subscription_binding_is_complete_round_trips_provenance(
         self,
     ) -> None:
+        # Arrange
         self.save(self.payload)
+
+        # Act
         plan = load_holdout_plan(self.path)
+
+        # Assert
         self.assertEqual(
             plan.generator_provider.as_json(), self.payload["generator_provider"]
         )
@@ -968,43 +1090,59 @@ class HoldoutProviderContractTests(unittest.TestCase):
             plan.generator_provider.execution_policy["release_authoritative"]
         )
 
-    def test_schema_v3_source_bindings_are_exact_and_canonical(self) -> None:
+    def test_load_holdout_plan_when_contract_is_current_round_trips_bindings(
+        self,
+    ) -> None:
+        # Arrange
         payload = copy.deepcopy(self.payload)
-        payload["schema_version"] = 3
-        payload.pop("candidate_commit")
-        payload.pop("original_commit")
-        payload["evaluation_mode"] = "judged"
-        payload["comparator_calibration_evidence_sha256"] = "3" * 64
-        payload["comparator_profile_id"] = "software-engineering-v2.3"
-        payload["comparator_profile_descriptor_sha256"] = "4" * 64
-        payload["comparator_profile_authority_registry_sha256"] = "5" * 64
-        case_ids = sorted(case["id"] for case in payload["cases"])
-        payload["source_bindings"] = [
-            {
-                "variant_id": variant_id,
-                "kind": kind,
-                "source_commit": commit,
-                "source_sha256_by_case": {case_id: digest for case_id in case_ids},
-            }
-            for variant_id, kind, commit, digest in (
-                ("candidate", "worktree", "e" * 64, "1" * 64),
-                ("original", "git_ref", "f" * 40, "2" * 64),
-            )
-        ]
-        self.assertFalse(list(Draft202012Validator(self.schema).iter_errors(payload)))
+
+        # Act
+        schema_errors = list(Draft202012Validator(self.schema).iter_errors(payload))
         self.save(payload)
         plan = load_holdout_plan(self.path)
-        self.assertEqual(plan.schema_version, 3)
+
+        # Assert
+        self.assertFalse(schema_errors)
         self.assertEqual(plan.evaluation_mode, "judged")
         self.assertEqual(
             tuple(binding.variant_id for binding in plan.source_bindings),
             ("candidate", "original"),
         )
+        self.assertEqual(
+            plan.generator_adapter_binding.adapter_id,
+            "codex-app-server",
+        )
+        self.assertEqual(plan.as_evidence()["schema_version"], 1)
+        self.assertFalse(hasattr(plan, "schema_version"))
 
-        mutations = {
-            "legacy commit": lambda value: value.__setitem__(
+    def test_load_holdout_plan_when_shape_is_legacy_rejects_payload(self) -> None:
+        # Arrange
+        payload = copy.deepcopy(self.payload)
+        legacy_mutations = {
+            "suite-era commit fields": lambda value: value.__setitem__(
                 "candidate_commit", "e" * 40
             ),
+            "non-v1 wire version": lambda value: value.__setitem__("schema_version", 3),
+            "legacy assurance": lambda value: value["provenance"].__setitem__(
+                "assurance", "trusted-reviewed-attestation"
+            ),
+        }
+
+        # Act + Assert
+        for label, mutate in legacy_mutations.items():
+            with self.subTest(label=label):
+                invalid = copy.deepcopy(payload)
+                mutate(invalid)
+                self.assert_schema_and_parser_reject(invalid)
+
+    def test_load_holdout_plan_when_source_bindings_are_noncanonical_rejects_plan(
+        self,
+    ) -> None:
+        # Arrange
+        payload = copy.deepcopy(self.payload)
+        case_ids = sorted(case["id"] for case in payload["cases"])
+
+        mutations = {
             "missing variant": lambda value: value["source_bindings"].pop(),
             "reordered variants": lambda value: value["source_bindings"].reverse(),
             "missing case": lambda value: value["source_bindings"][0][
@@ -1014,77 +1152,69 @@ class HoldoutProviderContractTests(unittest.TestCase):
                 0
             ].__setitem__("source_commit", None),
         }
+
+        # Act + Assert
         for label, mutate in mutations.items():
             with self.subTest(label=label):
                 invalid = copy.deepcopy(payload)
                 mutate(invalid)
-                if label in {"missing variant", "reordered variants", "missing case"}:
-                    self.save(invalid)
-                    with self.assertRaises(HoldoutPlanError):
-                        load_holdout_plan(self.path)
-                else:
-                    self.assert_schema_and_parser_reject(invalid)
+                self.save(invalid)
+                with self.assertRaises(HoldoutPlanError):
+                    load_holdout_plan(self.path)
 
-        objective = copy.deepcopy(payload)
-        objective["evaluation_mode"] = "objective_only"
+    def test_load_holdout_plan_when_mode_is_objective_rejects_comparator_authority(
+        self,
+    ) -> None:
+        # Arrange
+        payload = copy.deepcopy(self.payload)
+        payload["evaluation_mode"] = "objective_only"
         for field in (
             "comparator_release_sha256",
             "comparator_calibration_evidence_sha256",
             "comparator_profile_id",
             "comparator_profile_descriptor_sha256",
             "comparator_profile_authority_registry_sha256",
+            "comparator_adapter_binding",
         ):
-            objective.pop(field)
-        objective["objective_acceptance_policy_id"] = "verifier-pass-v1"
-        objective["objective_acceptance_policy_sha256"] = "6" * 64
-        self.assertFalse(list(Draft202012Validator(self.schema).iter_errors(objective)))
-        self.save(objective)
+            payload.pop(field)
+        payload["objective_acceptance_policy_id"] = "verifier-pass-v1"
+        payload["objective_acceptance_policy_sha256"] = "6" * 64
+
+        # Act
+        schema_errors = list(Draft202012Validator(self.schema).iter_errors(payload))
+        self.save(payload)
         objective_plan = load_holdout_plan(self.path)
+
+        # Assert
+        self.assertFalse(schema_errors)
         self.assertEqual(objective_plan.evaluation_mode, "objective_only")
         self.assertIsNone(objective_plan.comparator_release_sha256)
+        self.assertIsNone(objective_plan.comparator_adapter_binding)
 
-        objective_with_comparator = copy.deepcopy(objective)
+        objective_with_comparator = copy.deepcopy(payload)
         objective_with_comparator["comparator_release_sha256"] = "7" * 64
         self.assert_schema_and_parser_reject(objective_with_comparator)
-        judged_with_objective = copy.deepcopy(payload)
+        judged_with_objective = copy.deepcopy(self.payload)
         judged_with_objective["objective_acceptance_policy_id"] = "verifier-pass-v1"
         self.assert_schema_and_parser_reject(judged_with_objective)
-        objective_without_policy = copy.deepcopy(objective)
+        objective_without_policy = copy.deepcopy(payload)
         objective_without_policy.pop("objective_acceptance_policy_sha256")
         self.assert_schema_and_parser_reject(objective_without_policy)
 
-        adapter_binding = {
-            "adapter_id": "deterministic-fake",
-            "authority_scope": "test",
-            "binding_sha256": "7" * 64,
-            "capability_sha256": "8" * 64,
-            "config_sha256": "9" * 64,
-            "contract_revision": 1,
-            "role": "generation",
-            "runtime_provenance_sha256": "a" * 64,
-        }
-        version_four = copy.deepcopy(payload)
-        version_four["schema_version"] = 4
-        version_four["generator_adapter_binding"] = adapter_binding
-        version_four["comparator_adapter_binding"] = {
-            **adapter_binding,
-            "role": "comparison",
-        }
-        self.assertFalse(
-            list(Draft202012Validator(self.schema).iter_errors(version_four))
-        )
-        self.save(version_four)
-        version_four_plan = load_holdout_plan(self.path)
-        self.assertEqual(version_four_plan.schema_version, 4)
-        self.assertEqual(
-            version_four_plan.generator_adapter_binding.adapter_id,
-            "deterministic-fake",
-        )
-        wrong_role = copy.deepcopy(version_four)
+    def test_load_holdout_plan_when_adapter_roles_are_confused_rejects_plan(
+        self,
+    ) -> None:
+        # Arrange
+        wrong_role = copy.deepcopy(self.payload)
         wrong_role["generator_adapter_binding"]["role"] = "comparison"
+
+        # Act + Assert
         self.assert_schema_and_parser_reject(wrong_role)
 
-    def test_holdout_parser_and_schema_reject_billing_policy_mutations(self) -> None:
+    def test_load_holdout_plan_when_billing_policy_is_invalid_rejects_schema_and_parser(
+        self,
+    ) -> None:
+        # Arrange
         mutations: list[dict[str, object]] = []
         for changes in (
             {"reasoning_effort": None},
@@ -1116,6 +1246,7 @@ class HoldoutProviderContractTests(unittest.TestCase):
         metered["generator_provider"]["billing_basis"] = "metered_api"  # type: ignore[index]
         mutations.append(metered)
 
+        # Act + Assert
         for payload in mutations:
             with self.subTest(provider=payload["generator_provider"]):
                 self.assert_schema_and_parser_reject(payload)

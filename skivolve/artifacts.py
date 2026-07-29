@@ -64,7 +64,7 @@ def normalize_artifact(kind: str, raw: str | bytes) -> NormalizedArtifact:
             kind=kind,
             media_type="text/x-diff; charset=utf-8",
             filename="artifact.txt",
-            canonicalization="skivolve-workspace-diff-v2",
+            canonicalization="skivolve-workspace-diff-v1",
             content=content,
             raw_byte_count=raw_size,
         )
@@ -75,7 +75,7 @@ def normalize_artifact(kind: str, raw: str | bytes) -> NormalizedArtifact:
             kind=kind,
             media_type="text/plain; charset=utf-8",
             filename="artifact.txt",
-            canonicalization="skivolve-text-lf-v2",
+            canonicalization="skivolve-text-lf-v1",
             content=content,
             raw_byte_count=raw_size,
         )

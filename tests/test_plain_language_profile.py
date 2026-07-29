@@ -90,13 +90,18 @@ class PlainLanguageProfileTests(unittest.TestCase):
         finally:
             runtime.close()
 
-    def test_cross_profile_semantic_substitution_fails_release_lock(self) -> None:
+    def test_resolve_profile_directory_when_semantic_contract_comes_from_another_profile_rejects_release_lock(
+        self,
+    ) -> None:
+        # Arrange
         built_in = resolve_builtin_profile(BUILTIN_PLAIN_LANGUAGE_PROFILE_ID)
-        software = resolve_builtin_profile("software-engineering-v2.3")
+        software = resolve_builtin_profile("software-engineering-v1")
         with built_in.materialize() as root:
             (Path(root) / "semantic-contract.json").write_bytes(
                 software.read_bytes("semantic_contract")
             )
+
+            # Act + Assert
             with self.assertRaisesRegex(
                 ComparatorProfileError, "artifact lock is stale"
             ):

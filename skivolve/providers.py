@@ -42,7 +42,6 @@ from skivolve.comparator_runtime import (
 from .manifest import ProviderConfig
 from .provider_capabilities import (
     ProviderCapabilityError,
-    adapter_id_for_legacy_kind,
     capabilities_for,
 )
 
@@ -76,13 +75,10 @@ CONCURRENT_AUTHORITATIVE = ProviderExecutionPolicy("concurrent", True)
 SERIALIZED_DIAGNOSTIC = ProviderExecutionPolicy("serialized", False)
 
 
-def execution_policy_for(identifier: str) -> ProviderExecutionPolicy:
-    """Return the immutable execution policy for a reviewed adapter or legacy kind."""
+def execution_policy_for(adapter_id: str) -> ProviderExecutionPolicy:
+    """Return the immutable execution policy for a reviewed adapter."""
 
     try:
-        adapter_id = (
-            identifier if "-" in identifier else adapter_id_for_legacy_kind(identifier)
-        )
         capabilities = capabilities_for(adapter_id)
     except ProviderCapabilityError as exc:
         raise ProviderError(str(exc)) from exc

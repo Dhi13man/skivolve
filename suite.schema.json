@@ -1,91 +1,40 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://github.com/Dhi13man/skivolve/blob/main/suite.schema.json",
-  "title": "Skivolve instruction-bundle suite",
-  "description": "Manifest for isolated, blinded instruction-bundle evaluations through registered agent-harness providers.",
-  "oneOf": [
-    {
-      "$ref": "#/$defs/suiteV2"
-    },
-    {
-      "$ref": "#/$defs/suiteV3"
-    },
-    {
-      "$ref": "#/$defs/suiteV4"
-    },
-    {
-      "$ref": "#/$defs/suiteV5"
-    },
-    {
-      "$ref": "#/$defs/suiteV6"
-    },
-    {
-      "$ref": "#/$defs/suiteV7"
-    }
-  ],
+  "$id": "https://raw.githubusercontent.com/Dhi13man/skivolve/v0.5.0/suite.schema.json",
+  "$ref": "#/$defs/suite",
   "$defs": {
-    "suiteV2": {
-      "$ref": "#/$defs/suiteBase",
+    "suite": {
+      "type": "object",
+      "additionalProperties": false,
       "required": [
-        "comparator"
+        "schema_version",
+        "suite_id",
+        "seed",
+        "repository_root",
+        "evaluation_mode",
+        "provider",
+        "shared_verifier_dir",
+        "holdout",
+        "variants",
+        "comparisons",
+        "cases"
       ],
       "properties": {
-        "provider": {
-          "$ref": "#/$defs/provider"
-        },
-        "comparator": {
-          "$ref": "#/$defs/comparatorProvider"
+        "$schema": {
+          "type": "string"
         },
         "schema_version": {
-          "const": 2
+          "const": 1
         },
-        "cases": {
-          "type": "array",
-          "minItems": 1,
-          "items": {
-            "$ref": "#/$defs/judgedCase"
-          }
-        }
-      },
-      "not": {
-        "anyOf": [
-          {
-            "required": [
-              "evaluation_mode"
-            ]
-          },
-          {
-            "required": [
-              "comparator_profile"
-            ]
-          },
-          {
-            "required": [
-              "shared_verifier_dir"
-            ]
-          },
-          {
-            "required": [
-              "holdout"
-            ]
-          }
-        ]
-      }
-    },
-    "suiteV3": {
-      "$ref": "#/$defs/suiteBase",
-      "required": [
-        "evaluation_mode"
-      ],
-      "properties": {
-        "provider": {
-          "$ref": "#/$defs/provider"
+        "suite_id": {
+          "$ref": "#/$defs/identifier"
         },
-        "comparator": {
-          "$ref": "#/$defs/comparatorProvider"
+        "seed": {
+          "type": "integer",
+          "minimum": 0
         },
-        "schema_version": {
-          "const": 3
+        "repository_root": {
+          "$ref": "#/$defs/relativePath"
         },
         "evaluation_mode": {
           "enum": [
@@ -93,27 +42,48 @@
             "objective_only"
           ]
         },
+        "provider": {
+          "$ref": "#/$defs/provider"
+        },
+        "comparator": {
+          "$ref": "#/$defs/comparatorProvider"
+        },
         "comparator_profile": {
           "$ref": "#/$defs/comparatorProfile"
+        },
+        "shared_verifier_dir": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/sharedVerifierPath"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "holdout": {
+          "$ref": "#/$defs/holdoutConfig"
+        },
+        "variants": {
+          "type": "array",
+          "minItems": 2,
+          "items": {
+            "$ref": "#/$defs/variant"
+          }
+        },
+        "comparisons": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/comparison"
+          }
+        },
+        "cases": {
+          "type": "array",
+          "minItems": 1
         }
       },
       "allOf": [
-        {
-          "not": {
-            "anyOf": [
-              {
-                "required": [
-                  "shared_verifier_dir"
-                ]
-              },
-              {
-                "required": [
-                  "holdout"
-                ]
-              }
-            ]
-          }
-        },
         {
           "if": {
             "properties": {
@@ -132,8 +102,6 @@
             ],
             "properties": {
               "cases": {
-                "type": "array",
-                "minItems": 1,
                 "items": {
                   "$ref": "#/$defs/judgedCase"
                 }
@@ -157,441 +125,11 @@
             },
             "properties": {
               "cases": {
-                "type": "array",
-                "minItems": 1,
                 "items": {
                   "$ref": "#/$defs/objectiveCase"
                 }
               }
             }
-          }
-        }
-      ]
-    },
-    "suiteV4": {
-      "$ref": "#/$defs/suiteBase",
-      "required": [
-        "evaluation_mode",
-        "shared_verifier_dir"
-      ],
-      "properties": {
-        "provider": {
-          "$ref": "#/$defs/provider"
-        },
-        "comparator": {
-          "$ref": "#/$defs/comparatorProvider"
-        },
-        "schema_version": {
-          "const": 4
-        },
-        "evaluation_mode": {
-          "enum": [
-            "judged",
-            "objective_only"
-          ]
-        },
-        "comparator_profile": {
-          "$ref": "#/$defs/comparatorProfile"
-        }
-      },
-      "allOf": [
-        {
-          "not": {
-            "required": [
-              "holdout"
-            ]
-          }
-        },
-        {
-          "if": {
-            "properties": {
-              "evaluation_mode": {
-                "const": "judged"
-              }
-            },
-            "required": [
-              "evaluation_mode"
-            ]
-          },
-          "then": {
-            "required": [
-              "comparator",
-              "comparator_profile"
-            ],
-            "properties": {
-              "cases": {
-                "type": "array",
-                "minItems": 1,
-                "items": {
-                  "$ref": "#/$defs/judgedCaseV4"
-                }
-              }
-            }
-          },
-          "else": {
-            "not": {
-              "anyOf": [
-                {
-                  "required": [
-                    "comparator"
-                  ]
-                },
-                {
-                  "required": [
-                    "comparator_profile"
-                  ]
-                }
-              ]
-            },
-            "properties": {
-              "cases": {
-                "type": "array",
-                "minItems": 1,
-                "items": {
-                  "$ref": "#/$defs/objectiveCaseV4"
-                }
-              }
-            }
-          }
-        }
-      ]
-    },
-    "suiteV5": {
-      "$ref": "#/$defs/suiteBase",
-      "required": [
-        "evaluation_mode",
-        "shared_verifier_dir",
-        "holdout"
-      ],
-      "properties": {
-        "provider": {
-          "$ref": "#/$defs/provider"
-        },
-        "comparator": {
-          "$ref": "#/$defs/comparatorProvider"
-        },
-        "schema_version": {
-          "const": 5
-        },
-        "evaluation_mode": {
-          "enum": [
-            "judged",
-            "objective_only"
-          ]
-        },
-        "comparator_profile": {
-          "$ref": "#/$defs/comparatorProfile"
-        },
-        "holdout": {
-          "$ref": "#/$defs/holdoutConfig"
-        }
-      },
-      "allOf": [
-        {
-          "if": {
-            "properties": {
-              "evaluation_mode": {
-                "const": "judged"
-              }
-            },
-            "required": [
-              "evaluation_mode"
-            ]
-          },
-          "then": {
-            "required": [
-              "comparator",
-              "comparator_profile"
-            ],
-            "properties": {
-              "cases": {
-                "type": "array",
-                "minItems": 1,
-                "items": {
-                  "$ref": "#/$defs/judgedCaseV4"
-                }
-              }
-            }
-          },
-          "else": {
-            "not": {
-              "anyOf": [
-                {
-                  "required": [
-                    "comparator"
-                  ]
-                },
-                {
-                  "required": [
-                    "comparator_profile"
-                  ]
-                }
-              ]
-            },
-            "properties": {
-              "cases": {
-                "type": "array",
-                "minItems": 1,
-                "items": {
-                  "$ref": "#/$defs/objectiveCaseV4"
-                }
-              }
-            }
-          }
-        }
-      ]
-    },
-    "suiteV6": {
-      "$ref": "#/$defs/suiteBase",
-      "required": [
-        "evaluation_mode",
-        "shared_verifier_dir",
-        "holdout"
-      ],
-      "properties": {
-        "provider": {
-          "$ref": "#/$defs/providerV6"
-        },
-        "comparator": {
-          "$ref": "#/$defs/comparatorProviderV6"
-        },
-        "schema_version": {
-          "const": 6
-        },
-        "evaluation_mode": {
-          "enum": [
-            "judged",
-            "objective_only"
-          ]
-        },
-        "comparator_profile": {
-          "$ref": "#/$defs/comparatorProfile"
-        },
-        "holdout": {
-          "$ref": "#/$defs/holdoutConfig"
-        }
-      },
-      "allOf": [
-        {
-          "if": {
-            "properties": {
-              "evaluation_mode": {
-                "const": "judged"
-              }
-            },
-            "required": [
-              "evaluation_mode"
-            ]
-          },
-          "then": {
-            "required": [
-              "comparator",
-              "comparator_profile"
-            ],
-            "properties": {
-              "cases": {
-                "type": "array",
-                "minItems": 1,
-                "items": {
-                  "$ref": "#/$defs/judgedCaseV4"
-                }
-              }
-            }
-          },
-          "else": {
-            "not": {
-              "anyOf": [
-                {
-                  "required": [
-                    "comparator"
-                  ]
-                },
-                {
-                  "required": [
-                    "comparator_profile"
-                  ]
-                }
-              ]
-            },
-            "properties": {
-              "cases": {
-                "type": "array",
-                "minItems": 1,
-                "items": {
-                  "$ref": "#/$defs/objectiveCaseV4"
-                }
-              }
-            }
-          }
-        }
-      ]
-    },
-    "suiteV7": {
-      "$ref": "#/$defs/suiteBase",
-      "required": [
-        "evaluation_mode",
-        "shared_verifier_dir",
-        "holdout"
-      ],
-      "properties": {
-        "provider": {
-          "$ref": "#/$defs/providerV6"
-        },
-        "comparator": {
-          "$ref": "#/$defs/comparatorProviderV6"
-        },
-        "schema_version": {
-          "const": 7
-        },
-        "evaluation_mode": {
-          "enum": [
-            "judged",
-            "objective_only"
-          ]
-        },
-        "comparator_profile": {
-          "$ref": "#/$defs/comparatorProfile"
-        },
-        "holdout": {
-          "$ref": "#/$defs/holdoutConfig"
-        }
-      },
-      "allOf": [
-        {
-          "if": {
-            "properties": {
-              "evaluation_mode": {
-                "const": "judged"
-              }
-            },
-            "required": [
-              "evaluation_mode"
-            ]
-          },
-          "then": {
-            "required": [
-              "comparator",
-              "comparator_profile"
-            ],
-            "properties": {
-              "cases": {
-                "type": "array",
-                "minItems": 1,
-                "items": {
-                  "$ref": "#/$defs/judgedCaseV7"
-                }
-              }
-            }
-          },
-          "else": {
-            "not": {
-              "anyOf": [
-                {
-                  "required": [
-                    "comparator"
-                  ]
-                },
-                {
-                  "required": [
-                    "comparator_profile"
-                  ]
-                }
-              ]
-            },
-            "properties": {
-              "cases": {
-                "type": "array",
-                "minItems": 1,
-                "items": {
-                  "$ref": "#/$defs/objectiveCaseV7"
-                }
-              }
-            }
-          }
-        }
-      ]
-    },
-    "suiteBase": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": [
-        "schema_version",
-        "suite_id",
-        "seed",
-        "repository_root",
-        "provider",
-        "variants",
-        "comparisons",
-        "cases"
-      ],
-      "properties": {
-        "$schema": {
-          "type": "string"
-        },
-        "schema_version": {},
-        "evaluation_mode": {},
-        "suite_id": {
-          "type": "string",
-          "pattern": "^[a-z0-9][a-z0-9._-]*$"
-        },
-        "seed": {
-          "type": "integer",
-          "minimum": 0
-        },
-        "repository_root": {
-          "$ref": "#/$defs/relativePath"
-        },
-        "provider": {
-        },
-        "comparator": {
-        },
-        "comparator_profile": {},
-        "shared_verifier_dir": {
-          "oneOf": [
-            {
-              "$ref": "#/$defs/sharedVerifierPath"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
-        "holdout": {},
-        "variants": {
-          "type": "array",
-          "minItems": 2,
-          "items": {
-            "$ref": "#/$defs/variant"
-          }
-        },
-        "comparisons": {
-          "type": "array",
-          "minItems": 1,
-          "items": {
-            "$ref": "#/$defs/comparison"
-          }
-        },
-        "cases": {
-          "type": "array",
-          "minItems": 1
-        }
-      }
-    },
-    "comparatorProvider": {
-      "allOf": [
-        {
-          "$ref": "#/$defs/provider"
-        },
-        {
-          "not": {
-            "properties": {
-              "kind": {
-                "const": "codex"
-              }
-            },
-            "required": [
-              "kind"
-            ]
           }
         }
       ]
@@ -611,7 +149,7 @@
             },
             "id": {
               "enum": [
-                "software-engineering-v2.3",
+                "software-engineering-v1",
                 "plain-language-revision-v1"
               ]
             }
@@ -677,194 +215,6 @@
       }
     },
     "provider": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": [
-        "kind",
-        "model",
-        "timeout_seconds"
-      ],
-      "properties": {
-        "kind": {
-          "enum": [
-            "claude",
-            "codex",
-            "fake"
-          ]
-        },
-        "executable": {
-          "type": "string",
-          "minLength": 1
-        },
-        "model": {
-          "type": "string",
-          "minLength": 1
-        },
-        "max_budget_usd": {
-          "type": "number",
-          "exclusiveMinimum": 0
-        },
-        "reasoning_effort": {
-          "enum": [
-            "low",
-            "medium",
-            "high",
-            "xhigh",
-            "max",
-            "ultra"
-          ]
-        },
-        "billing_basis": {
-          "enum": [
-            "metered_api",
-            "chatgpt_subscription"
-          ]
-        },
-        "protocol_lock": {
-          "$ref": "#/$defs/suiteFilePath"
-        },
-        "timeout_seconds": {
-          "type": "integer",
-          "minimum": 1,
-          "maximum": 3600
-        }
-      },
-      "allOf": [
-        {
-          "if": {
-            "properties": {
-              "kind": {
-                "const": "claude"
-              }
-            }
-          },
-          "then": {
-            "required": [
-              "executable",
-              "max_budget_usd"
-            ],
-            "properties": {
-              "billing_basis": {
-                "const": "metered_api"
-              }
-            },
-            "not": {
-              "anyOf": [
-                {
-                  "required": [
-                    "reasoning_effort"
-                  ]
-                },
-                {
-                  "required": [
-                    "protocol_lock"
-                  ]
-                }
-              ]
-            }
-          }
-        },
-        {
-          "if": {
-            "properties": {
-              "kind": {
-                "const": "fake"
-              }
-            },
-            "required": [
-              "kind"
-            ]
-          },
-          "then": {
-            "properties": {
-              "billing_basis": {
-                "const": "metered_api"
-              }
-            },
-            "not": {
-              "anyOf": [
-                {
-                  "required": [
-                    "reasoning_effort"
-                  ]
-                },
-                {
-                  "required": [
-                    "protocol_lock"
-                  ]
-                }
-              ]
-            }
-          }
-        },
-        {
-          "if": {
-            "properties": {
-              "kind": {
-                "const": "codex"
-              }
-            },
-            "required": [
-              "kind"
-            ]
-          },
-          "then": {
-            "required": [
-              "executable",
-              "reasoning_effort",
-              "billing_basis",
-              "protocol_lock"
-            ],
-            "properties": {
-              "model": {
-                "enum": [
-                  "gpt-5.6-luna",
-                  "gpt-5.6-terra"
-                ]
-              },
-              "billing_basis": {
-                "const": "chatgpt_subscription"
-              }
-            },
-            "not": {
-              "required": [
-                "max_budget_usd"
-              ]
-            }
-          }
-        },
-        {
-          "if": {
-            "properties": {
-              "kind": {
-                "const": "codex"
-              },
-              "model": {
-                "const": "gpt-5.6-luna"
-              }
-            },
-            "required": [
-              "kind",
-              "model"
-            ]
-          },
-          "then": {
-            "properties": {
-              "reasoning_effort": {
-                "enum": [
-                  "low",
-                  "medium",
-                  "high",
-                  "xhigh",
-                  "max"
-                ]
-              }
-            }
-          }
-        }
-      ]
-    },
-    "providerV6": {
       "oneOf": [
         {
           "type": "object",
@@ -1010,10 +360,10 @@
         }
       ]
     },
-    "comparatorProviderV6": {
+    "comparatorProvider": {
       "allOf": [
         {
-          "$ref": "#/$defs/providerV6"
+          "$ref": "#/$defs/provider"
         },
         {
           "not": {
@@ -1129,6 +479,8 @@
       "required": [
         "id",
         "skill",
+        "bundle_source",
+        "artifact_contract",
         "split",
         "prompt_file",
         "fixture_dir",
@@ -1147,6 +499,9 @@
         },
         "bundle_source": {
           "$ref": "#/$defs/bundleSourcePath"
+        },
+        "artifact_contract": {
+          "$ref": "#/$defs/artifactContract"
         },
         "split": {
           "enum": [
@@ -1186,9 +541,6 @@
         },
         "comparator_contract": {
           "$ref": "#/$defs/comparatorContract"
-        },
-        "artifact_contract": {
-          "$ref": "#/$defs/artifactContract"
         }
       }
     },
@@ -1201,20 +553,6 @@
           "required": [
             "comparator_contract"
           ]
-        },
-        {
-          "not": {
-            "required": [
-              "bundle_source"
-            ]
-          }
-        },
-        {
-          "not": {
-            "required": [
-              "artifact_contract"
-            ]
-          }
         }
       ]
     },
@@ -1224,98 +562,6 @@
           "$ref": "#/$defs/caseBase"
         },
         {
-          "not": {
-            "anyOf": [
-              {
-                "required": [
-                  "comparator_contract"
-                ]
-              },
-              {
-                "required": [
-                  "bundle_source"
-                ]
-              },
-              {
-                "required": [
-                  "artifact_contract"
-                ]
-              }
-            ]
-          }
-        }
-      ]
-    },
-    "judgedCaseV4": {
-      "allOf": [
-        {
-          "$ref": "#/$defs/caseBase"
-        },
-        {
-          "required": [
-            "bundle_source",
-            "comparator_contract"
-          ]
-        },
-        {
-          "not": {
-            "required": [
-              "artifact_contract"
-            ]
-          }
-        }
-      ]
-    },
-    "objectiveCaseV4": {
-      "allOf": [
-        {
-          "$ref": "#/$defs/caseBase"
-        },
-        {
-          "required": [
-            "bundle_source"
-          ],
-          "not": {
-            "anyOf": [
-              {
-                "required": [
-                  "comparator_contract"
-                ]
-              },
-              {
-                "required": [
-                  "artifact_contract"
-                ]
-              }
-            ]
-          }
-        }
-      ]
-    },
-    "judgedCaseV7": {
-      "allOf": [
-        {
-          "$ref": "#/$defs/caseBase"
-        },
-        {
-          "required": [
-            "artifact_contract",
-            "bundle_source",
-            "comparator_contract"
-          ]
-        }
-      ]
-    },
-    "objectiveCaseV7": {
-      "allOf": [
-        {
-          "$ref": "#/$defs/caseBase"
-        },
-        {
-          "required": [
-            "artifact_contract",
-            "bundle_source"
-          ],
           "not": {
             "required": [
               "comparator_contract"
@@ -1355,42 +601,75 @@
           "items": {
             "type": "object",
             "additionalProperties": false,
-            "required": ["id", "kind", "text"],
+            "required": [
+              "id",
+              "kind",
+              "text"
+            ],
             "properties": {
-              "id": {"$ref": "#/$defs/identifier"},
-              "kind": {"$ref": "#/$defs/identifier"},
-              "text": {"type": "string", "minLength": 20}
+              "id": {
+                "$ref": "#/$defs/identifier"
+              },
+              "kind": {
+                "$ref": "#/$defs/identifier"
+              },
+              "text": {
+                "type": "string",
+                "minLength": 20
+              }
             }
           }
         },
         "performance_basis": {
           "oneOf": [
-            {"type": "null"},
+            {
+              "type": "null"
+            },
             {
               "type": "object",
               "additionalProperties": false,
-              "required": ["kind", "detail"],
+              "required": [
+                "kind",
+                "detail"
+              ],
               "properties": {
-                "kind": {"$ref": "#/$defs/identifier"},
-                "detail": {"type": "string", "minLength": 20}
+                "kind": {
+                  "$ref": "#/$defs/identifier"
+                },
+                "detail": {
+                  "type": "string",
+                  "minLength": 20
+                }
               }
             }
           ]
         },
         "qualitative_bases": {
           "type": "object",
-          "propertyNames": {"$ref": "#/$defs/identifier"},
-          "additionalProperties": {"$ref": "#/$defs/qualitativeBasis"}
+          "propertyNames": {
+            "$ref": "#/$defs/identifier"
+          },
+          "additionalProperties": {
+            "$ref": "#/$defs/qualitativeBasis"
+          }
         }
       }
     },
     "qualitativeBasis": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["kind", "detail"],
+      "required": [
+        "kind",
+        "detail"
+      ],
       "properties": {
-        "kind": {"$ref": "#/$defs/identifier"},
-        "detail": {"type": "string", "minLength": 20}
+        "kind": {
+          "$ref": "#/$defs/identifier"
+        },
+        "detail": {
+          "type": "string",
+          "minLength": 20
+        }
       }
     },
     "verifier": {

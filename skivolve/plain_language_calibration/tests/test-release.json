@@ -1,19 +1,19 @@
 {
-  "schema_version": 2,
-  "release_id": "plain-language-revision-test-v1.0",
+  "schema_version": 1,
+  "release_id": "plain-language-revision-test-v1",
   "test_release": true,
   "artifacts": {
-    "profile_descriptor_sha256": "718e46433f4844cc4b011adaa31dd1086279411a6467dffd2a78afabb8c382a0",
-    "corpus_sha256": "96517958aa3e47ac334c38a0554bc682bd94931d3774e28baf56fbbeb3d745a6",
-    "manifest_schema_sha256": "d017b7fb6b7a34d6b4380a561c118fcfa8b9bd0f2554fcd9e86718085182c9d2",
-    "rubric_sha256": "e129b01041f9b1dc273d30d2029ede368d3c112405b5e1ab76f080c19e74130e",
-    "request_template_sha256": "40608a3f29b4d72329e6dc9b3174f2f6a9068f13fd2c08892209362f14850d35",
+    "profile_descriptor_sha256": "60806e964d6c415d1ebb007976acedd1286a2ec6dd788442e58f345cbbd26b30",
+    "corpus_sha256": "ed0399e56f49abc990c2b5ad21039cc5790b620130f9ffb1916202df7c2d583b",
+    "manifest_schema_sha256": "51b1068bf3fa492a6709f31fdcb7b650edfa019b428bdd167cccd17892faccb9",
+    "rubric_sha256": "8181b230d1264e978ef37fc4c7e9173ac560f80d1135ca52eaae0a34c2491ee0",
+    "request_template_sha256": "b9ecaf06c06edffb3a7651a7059ab9f9ee8837d6e35270d25215fc539c72dfc5",
     "system_prompt_sha256": "e1a8d21859257b675ce41b1d39f30c1c8f67b503457c4e0d9a2124237e1fd01e",
-    "response_schema_sha256": "9cc32a6a5274e7bdac40317a914ada8e188db2384c6f099c4d9dfe466a8d586f",
-    "evidence_schema_sha256": "61f2ece9cec3321d71c7babf0b3ab98ea949007bc07943aaf6c236a92f64d4e9",
-    "semantic_contract_sha256": "264c3e7fae90b1fe0a5811ba461c762a34e562c8067f664cf905424da8f81dcc",
-    "holdout_plan_schema_sha256": "4930d0114e67a333c41e94e3d07dfae6a5e9432c9e4a90b80c8b035d39ffc076",
-    "holdout_plan_schema_bytes_sha256": "6dc59cd84ec5961d6a54074cca2fcbea086965d0ea45b06549882ce0890e5778",
+    "response_schema_sha256": "5c922949c2c498fdf051e4899ab8acf43013ad23e4a433065e03c2e85914d23e",
+    "evidence_schema_sha256": "62ddc610bb88f67154fb2571db43e6045e9df3613078b1e8e8170edeff8a6b34",
+    "semantic_contract_sha256": "0a0155039d5b4a02272c59125f1e16cbe7b8db86d740939535d607fb662c892a",
+    "holdout_plan_schema_sha256": "880d5376c8d7cd69484f93adc98c27b2760d8da0473ac23be075f11f2ba21754",
+    "holdout_plan_schema_bytes_sha256": "93a85c471275fedf00b12d17b15de24374f266b2b0b69de970e0480f5defa414",
     "reviewer_a_sha256": "fed87f70ed43672beda597105b243fc3e020b028de8c6503060aa27878c27f92",
     "reviewer_b_sha256": "e8d2c6226c600bd5f0f44847616d9e96f80ee1ae9ee16e53d50bf4645afce296",
     "re_review_sha256": "7566a38c72e5f033cdfbd2fd071be8b01535e339ec521866b36cc3867eb623a5",
@@ -21,9 +21,9 @@
     "scoring_gold_sha256": "2346e0aab7c3c741835ef66cc892c296a93213a11d2ac1baf84580e29c7d6f7f"
   },
   "evaluator": {
-    "version": "2.3.0",
-    "source_sha256": "c88c5aca50d1bc876f4afffa373230939b224846e6390ad33e1d5c60fc395219",
-    "collector_source_sha256": "8f7b5c814e7ee7823f016745b77cb3e83591ff3be70f9721616affacbf814a01",
+    "version": "1.0.0",
+    "source_sha256": "d0b9414a331462d93ba48fa8614ee4239f5605369693e35bd5220fbb9b47e5c1",
+    "collector_source_sha256": "c7170dfee9681c5b2485f6c132fd8a76313cbbb1c90140b6cba620b655df21f1",
     "certifier_source_sha256": "0bbcad94a16a93a523d447eb8a95cd4569c4551949ab7fafac171aef00569f2b"
   },
   "judge": {
@@ -120,7 +120,7 @@
       }
     }
   },
-  "invocation_namespace_sha256": "79814ada03a15cec682c4d75739159e8e0661006444dce9598b1cdd20b334acd",
+  "invocation_namespace_sha256": "a76c2430c257497da20e060902eab5ad30d3c1fbeb1d56cbfb8a7886494c90fc",
   "acceptance": {
     "minimum_outcome_balanced_accuracy": 0.8,
     "minimum_outcome_cohen_kappa": 0.8,
@@ -141,22 +141,19 @@
   },
   "runtime_adapter": {
     "id": "shared-harness-claude-cli-v1",
-    "source_sha256": "76155b877c806a07192db4852c7298f2519d7f8c6dd0eb7e1a26d945b65f572e",
-    "harness_runner_source_sha256": "746f17871999343d1b11fd9fe6383c0b4c8b95c79c28d31178cc9ae5abf3517d",
-    "artifact_normalizer_source_sha256": "8261b249169002cf310d78048dcb4a9765cb52ab4c8ae09fc530705571510fb6",
-    "provider_source_sha256": "fc5cab71dcc34379c318324f8ff001e17aa134a6e5bc83f0037ade15e0f6bfd8",
-    "profile_registry_source_sha256": "3fe400f690141c481119b246396ba70d98432d679c246ff97613845f0dc430ea",
-    "provider_capability_registry_source_sha256": "8dcc38a4f8a617086d5efe4cbddf7da7f9de3d992a9f91800f060a62c1ab4402",
-    "harness_manifest_source_sha256": "519d1d8c420e59de7a23369fc38d5fa850bfda65ce6b2a9677fb9c3e7c0ee5af",
-    "harness_package_source_sha256": "075fd1a280fb0196babe94f7db4a242c698ad1fa33c79783d1f4a891cf1da73b",
+    "source_sha256": "2ace70a6a941a4078a83aa198d05b3344f5f2add72f99278182fe394de1f575c",
+    "harness_runner_source_sha256": "62edb2c1bb7163cf871e77bdbcccd66e8f9b771a8959d123db9ae54e628961c6",
+    "artifact_normalizer_source_sha256": "03d1895393718f4882f17b8a01347e45723b4ae634116319f746e8786ea8d688",
+    "provider_source_sha256": "7e79122bb2b68ec62b3fbf9239ffe0526e4f6870802fa695c3b04cee72a43729",
+    "profile_registry_source_sha256": "1582fa2eaebdf3c645f16918e2d5a62a279c176f55c1451d81aa48072b27648a",
+    "provider_capability_registry_source_sha256": "90871a063abcd1061c4d336589667837dd2d07ecfabcb69aa642ed5db283c07e",
+    "harness_manifest_source_sha256": "2d2924e7168a789cfa37ba513a30b4ceef28135d830127e833c7d3e1dc5c0569",
+    "harness_package_source_sha256": "eb4d6316c4ed472038178dc19ef6f10dc76916ff7d2b3075b3a88100074bbba2",
     "run_evals_source_sha256": "7f1c9665fa0b5715b0ff82bb7a1449545422533fee8927ae693970bed20802d5",
-    "holdout_plan_source_sha256": "8c3ff1f41c3210769714d1916c81545e4f85e729be22be66a87fd5b94e11f93f",
+    "holdout_plan_source_sha256": "38981b6a9f272d02418ca99e2f2a31666a22988e4ca67606f53e50fae6332b2b",
     "prepare_holdout_plan_source_sha256": "b26f8592d541a32f250699f6be77a9229b349c7f6bf893e76a1533610d1661a2",
     "baseline_authority_source_sha256": "ea291e85d74daa9539cca09d137d85144c77c3f768b642e3f10d227722f4ed98",
-    "frozen_original_commit": "21db6fdad124c2b0769dee6466a23ebddc0264bd",
-    "shared_harness_compatible": true,
-    "blocker": null
+    "frozen_original_commit": "21db6fdad124c2b0769dee6466a23ebddc0264bd"
   },
-  "gold_source": "scoring_gold",
   "trust_boundary_note": "This test-authority profile binds author-authored editorial fixture data to the shared comparator engine; it makes no independent-review claim and cannot authorize production or replace source, provider, spend, isolation, or holdout authority."
 }

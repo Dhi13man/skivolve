@@ -49,11 +49,19 @@ class ComparatorProfileTests(unittest.TestCase):
 
         return patch("skivolve.comparator_profiles.resources.files", side_effect=files)
 
-    def test_builtin_profile_snapshots_every_release_bound_resource(self) -> None:
-        profile = resolve_builtin_profile(BUILTIN_SOFTWARE_PROFILE_ID)
+    def test_resolve_builtin_profile_when_software_profile_is_current_snapshots_every_release_bound_resource(
+        self,
+    ) -> None:
+        # Arrange
+        profile_id = BUILTIN_SOFTWARE_PROFILE_ID
 
+        # Act
+        profile = resolve_builtin_profile(profile_id)
+
+        # Assert
+        self.assertEqual(profile.descriptor.schema_version, 1)
         self.assertEqual(profile.descriptor.id, BUILTIN_SOFTWARE_PROFILE_ID)
-        self.assertEqual(profile.descriptor.version, "2.3.0")
+        self.assertEqual(profile.descriptor.version, "1.0.0")
         self.assertEqual(
             profile.descriptor.supported_artifact_kinds, ("workspace_diff",)
         )
@@ -186,16 +194,17 @@ class ComparatorProfileTests(unittest.TestCase):
             packaged.close()
             compatibility.close()
 
-    def test_packaged_profile_does_not_require_checkout_holdout_schema(self) -> None:
+    def test_load_builtin_profile_when_external_assets_are_minimal_loads_without_checkout_only_files(
+        self,
+    ) -> None:
+        # Arrange
         project_root = Path(harness_package.__file__).resolve().parent.parent
         with tempfile.TemporaryDirectory() as temporary:
             suite_root = Path(temporary)
             suite_manifest = suite_root / "external-suite.json"
             shutil.copy2(project_root / "suite.json", suite_manifest)
-            shutil.copy2(
-                project_root / "baseline-authority.json",
-                suite_root / "baseline-authority.json",
-            )
+
+            # Act
             runtime = ComparatorRuntime.load_builtin_profile(
                 BUILTIN_SOFTWARE_PROFILE_ID,
                 external_suite_root=suite_root,
@@ -203,7 +212,9 @@ class ComparatorProfileTests(unittest.TestCase):
                 use_test_release=True,
             )
             try:
+                # Assert
                 self.assertTrue(runtime.protocol_locks_valid)
+                self.assertFalse((suite_root / "baseline-authority.json").exists())
                 self.assertFalse((suite_root / "holdout-plan.schema.json").exists())
             finally:
                 runtime.close()

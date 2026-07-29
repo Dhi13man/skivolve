@@ -52,7 +52,7 @@
     <main id="main-content" tabindex="-1">
       <header class="page-hero shell">
         <p class="eyebrow">FAQ · Terminology without fog</p>
-        <h1>What the evaluation proves—and what it does not.</h1>
+        <h1>What the evaluation proves and what it does not.</h1>
         <p class="lede">Agent evaluation language is dangerously easy to overstate. These answers keep objective verification, model judgment, source identity, validation, holdouts, and release claims distinct.</p>
       </header>
 
@@ -69,9 +69,9 @@
         <div class="section-heading"><p class="eyebrow">Method</p><h2 id="method-title">Verifiers, judges, and ordering</h2></div>
         <details open><summary>What is an objective case verifier?</summary><p>A bounded executable oracle that checks the case’s declared observable behavior. It must accept a known-good implementation and reject known-bad and adversarial variants for the failure modes it claims to detect.</p></details>
         <details><summary>Why not use a model judge for every result?</summary><p>Model judgment is not an independent oracle for crisp behavior and can leak identity or presentation order. Skivolve uses objective verification first and permits calibrated comparison only for declared ambiguity.</p></details>
-        <details><summary>What does blinded AB/BA comparison mean?</summary><p>The two artifacts are anonymized and presented in both A/B and reversed B/A order. Balanced ordering makes presentation effects visible and reduces—but does not eliminate—judge bias.</p></details>
-        <details><summary>What does calibrated comparison establish?</summary><p>A versioned profile records the rubric, corpus, schemas, model configuration, expected decisions, support by criterion, runtime sources, and limits. Calibration authority remains scoped to that profile and corpus; it is not a universal model-judge guarantee.</p></details>
-        <details><summary>What outputs can a case evaluate?</summary><p>Current schemas support canonical workspace diffs, strict LF-normalized final text, and bounded RFC 8785 canonical final JSON.</p></details>
+        <details><summary>What does blinded AB/BA comparison mean?</summary><p>The two artifacts are anonymized and presented in both A/B and reversed B/A order. Balanced ordering makes presentation effects visible and reduces judge bias without eliminating it.</p></details>
+        <details><summary>What does calibrated comparison establish?</summary><p><code>software-engineering-v1</code> records the rubric, corpus, response contracts, model configuration, expected decisions, support by criterion, runtime sources, and limits. Its authority remains scoped to that profile and corpus; it is not a universal model-judge guarantee.</p></details>
+        <details><summary>What outputs can a case evaluate?</summary><p>Suite schema v1 supports canonical workspace diffs, strict LF-normalized final text, and bounded RFC 8785 canonical final JSON.</p></details>
       </section>
 
       <section class="section shell" aria-labelledby="trust-title">
@@ -86,7 +86,7 @@
       <section class="section shell" aria-labelledby="terms-title">
         <div class="section-heading"><p class="eyebrow">Quick glossary</p><h2 id="terms-title">The nouns that carry authority.</h2></div>
         <div class="grid-3">
-          <article class="card"><h3>Skill or instruction bundle</h3><p>The versioned source under evaluation—not the evaluator and not the provider.</p></article>
+          <article class="card"><h3>Skill or instruction bundle</h3><p>The versioned source under evaluation, separate from the evaluator and provider.</p></article>
           <article class="card"><h3>Harness provider</h3><p>The reviewed adapter that invokes an agent runtime under declared capabilities and limits.</p></article>
           <article class="card"><h3>Case</h3><p>A task, fixture, verifier, resource limit, artifact contract, and set of observable expectations.</p></article>
           <article class="card"><h3>Validation split</h3><p>Public cases not used as the train split. Still public, and therefore not a private release holdout.</p></article>

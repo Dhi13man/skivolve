@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "skivolve"
-version = "0.4.0"
+version = "0.5.0"
 description = "Open-source framework for reproducible A/B evaluation of agent skills and instructions"
 readme = "README.md"
 requires-python = ">=3.11"

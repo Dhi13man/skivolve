@@ -1,199 +1,270 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://github.com/Dhi13man/skivolve/blob/main/holdout-plan.schema.json",
-  "$defs": {
-    "adapterBinding": {
-      "additionalProperties": false,
-      "properties": {
-        "adapter_id": {
-          "pattern": "^[a-z0-9][a-z0-9._-]*$",
-          "type": "string"
-        },
-        "authority_scope": {
-          "enum": [
-            "diagnostic",
-            "production",
-            "test"
-          ]
-        },
-        "binding_sha256": {
-          "pattern": "^[0-9a-f]{64}$",
-          "type": "string"
-        },
-        "capability_sha256": {
-          "pattern": "^[0-9a-f]{64}$",
-          "type": "string"
-        },
-        "config_sha256": {
-          "pattern": "^[0-9a-f]{64}$",
-          "type": "string"
-        },
-        "contract_revision": {
-          "minimum": 1,
-          "type": "integer"
-        },
-        "role": {
-          "enum": [
-            "comparison",
-            "generation"
-          ]
-        },
-        "runtime_provenance_sha256": {
-          "pattern": "^[0-9a-f]{64}$",
-          "type": "string"
-        }
-      },
-      "required": [
-        "adapter_id",
-        "authority_scope",
-        "binding_sha256",
-        "capability_sha256",
-        "config_sha256",
-        "contract_revision",
-        "role",
-        "runtime_provenance_sha256"
-      ],
-      "type": "object"
+  "$id": "https://raw.githubusercontent.com/Dhi13man/skivolve/v0.5.0/holdout-plan.schema.json",
+  "title": "Skivolve sealed holdout plan",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "plan_id",
+    "status",
+    "manifest_sha256",
+    "evaluation_mode",
+    "generator_provider",
+    "generator_adapter_binding",
+    "source_bindings",
+    "consumption_record_path",
+    "seed",
+    "comparison_profile",
+    "cases",
+    "provenance"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "plan_id": {
+      "$ref": "#/$defs/identifier"
+    },
+    "status": {
+      "const": "sealed"
+    },
+    "manifest_sha256": {
+      "$ref": "#/$defs/sha256"
+    },
+    "evaluation_mode": {
+      "enum": [
+        "judged",
+        "objective_only"
+      ]
+    },
+    "comparator_release_sha256": {
+      "$ref": "#/$defs/sha256"
+    },
+    "comparator_calibration_evidence_sha256": {
+      "$ref": "#/$defs/sha256"
+    },
+    "comparator_profile_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "comparator_profile_descriptor_sha256": {
+      "$ref": "#/$defs/sha256"
+    },
+    "comparator_profile_authority_registry_sha256": {
+      "$ref": "#/$defs/sha256"
+    },
+    "objective_acceptance_policy_id": {
+      "$ref": "#/$defs/identifier"
+    },
+    "objective_acceptance_policy_sha256": {
+      "$ref": "#/$defs/sha256"
+    },
+    "generator_provider": {
+      "$ref": "#/$defs/providerBinding"
+    },
+    "generator_adapter_binding": {
+      "$ref": "#/$defs/generatorAdapterBinding"
+    },
+    "comparator_adapter_binding": {
+      "$ref": "#/$defs/comparatorAdapterBinding"
+    },
+    "source_bindings": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/sourceBinding"
+      }
+    },
+    "consumption_record_path": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^/"
+    },
+    "seed": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "comparison_profile": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/comparisonBinding"
+      }
+    },
+    "cases": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/caseBinding"
+      }
+    },
+    "provenance": {
+      "$ref": "#/$defs/provenance"
     }
   },
-  "additionalProperties": false,
-  "properties": {
-    "comparator_calibration_evidence_sha256": {
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "evaluation_mode": {
+            "const": "judged"
+          }
+        },
+        "required": [
+          "evaluation_mode"
+        ]
+      },
+      "then": {
+        "required": [
+          "comparator_release_sha256",
+          "comparator_calibration_evidence_sha256",
+          "comparator_profile_id",
+          "comparator_profile_descriptor_sha256",
+          "comparator_profile_authority_registry_sha256",
+          "comparator_adapter_binding"
+        ],
+        "not": {
+          "anyOf": [
+            {
+              "required": [
+                "objective_acceptance_policy_id"
+              ]
+            },
+            {
+              "required": [
+                "objective_acceptance_policy_sha256"
+              ]
+            }
+          ]
+        }
+      },
+      "else": {
+        "required": [
+          "objective_acceptance_policy_id",
+          "objective_acceptance_policy_sha256"
+        ],
+        "not": {
+          "anyOf": [
+            {
+              "required": [
+                "comparator_release_sha256"
+              ]
+            },
+            {
+              "required": [
+                "comparator_calibration_evidence_sha256"
+              ]
+            },
+            {
+              "required": [
+                "comparator_profile_id"
+              ]
+            },
+            {
+              "required": [
+                "comparator_profile_descriptor_sha256"
+              ]
+            },
+            {
+              "required": [
+                "comparator_profile_authority_registry_sha256"
+              ]
+            },
+            {
+              "required": [
+                "comparator_adapter_binding"
+              ]
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "identifier": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9._-]*$"
+    },
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "nullableSha256": {
       "oneOf": [
         {
-          "pattern": "^[0-9a-f]{64}$",
-          "type": "string"
+          "$ref": "#/$defs/sha256"
         },
         {
           "type": "null"
         }
       ]
     },
-    "comparator_release_sha256": {
-      "pattern": "^[0-9a-f]{64}$",
-      "type": "string"
-    },
-    "comparator_profile_id": {
-      "minLength": 1,
-      "type": "string"
-    },
-    "comparator_profile_descriptor_sha256": {
-      "pattern": "^[0-9a-f]{64}$",
-      "type": "string"
-    },
-    "comparator_profile_authority_registry_sha256": {
-      "pattern": "^[0-9a-f]{64}$",
-      "type": "string"
-    },
-    "candidate_commit": {
-      "pattern": "^[0-9a-f]{40}$",
-      "type": "string"
-    },
-    "cases": {
-      "items": {
-        "additionalProperties": false,
-        "properties": {
-          "case_tree_sha256": {
-            "pattern": "^[0-9a-f]{64}$",
-            "type": "string"
-          },
-          "shared_tree_sha256": {
-            "oneOf": [
-              {
-                "pattern": "^[0-9a-f]{64}$",
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "release_case_fingerprint": {
-            "pattern": "^[0-9a-f]{64}$",
-            "type": "string"
-          },
-          "critical_expectations": {
-            "items": {
-              "minLength": 1,
-              "pattern": "^[a-z0-9][a-z0-9._-]*$",
-              "type": "string"
+    "executionPolicy": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "concurrency",
+            "release_authoritative"
+          ],
+          "properties": {
+            "concurrency": {
+              "const": "concurrent"
             },
-            "minItems": 1,
-            "type": "array",
-            "uniqueItems": true
-          },
-          "id": {
-            "pattern": "^[a-z0-9][a-z0-9._-]*$",
-            "type": "string"
-          },
-          "skill": {
-            "pattern": "^[a-z0-9][a-z0-9-]*$",
-            "type": "string"
-          }
-        },
-        "required": [
-          "id",
-          "case_tree_sha256",
-          "shared_tree_sha256",
-          "release_case_fingerprint",
-          "skill",
-          "critical_expectations"
-        ],
-        "type": "object"
-      },
-      "minItems": 1,
-      "type": "array"
-    },
-    "comparison_profile": {
-      "items": {
-        "additionalProperties": false,
-        "properties": {
-          "comparator_order": {
-            "minLength": 1,
-            "type": "string"
-          },
-          "control": {
-            "pattern": "^[a-z0-9][a-z0-9._-]*$",
-            "type": "string"
-          },
-          "id": {
-            "pattern": "^[a-z0-9][a-z0-9._-]*$",
-            "type": "string"
-          },
-          "repetitions": {
-            "minimum": 1,
-            "type": "integer"
-          },
-          "treatment": {
-            "pattern": "^[a-z0-9][a-z0-9._-]*$",
-            "type": "string"
-          }
-        },
-        "required": [
-          "id",
-          "control",
-          "treatment",
-          "repetitions",
-          "comparator_order"
-        ],
-        "type": "object"
-      },
-      "minItems": 1,
-      "type": "array"
-    },
-    "generator_provider": {
-      "additionalProperties": false,
-      "properties": {
-        "executable_sha256": {
-          "oneOf": [
-            {
-              "pattern": "^[0-9a-f]{64}$",
-              "type": "string"
-            },
-            {
-              "type": "null"
+            "release_authoritative": {
+              "const": true
             }
-          ]
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "concurrency",
+            "release_authoritative"
+          ],
+          "properties": {
+            "concurrency": {
+              "const": "serialized"
+            },
+            "release_authoritative": {
+              "const": false
+            }
+          }
+        }
+      ]
+    },
+    "providerBinding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "version",
+        "requested_model",
+        "executable_sha256",
+        "reasoning_effort",
+        "billing_basis",
+        "protocol_lock",
+        "protocol_lock_sha256",
+        "execution_policy"
+      ],
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "version": {
+          "type": "string",
+          "minLength": 1
+        },
+        "requested_model": {
+          "type": "string",
+          "minLength": 1
+        },
+        "executable_sha256": {
+          "$ref": "#/$defs/nullableSha256"
         },
         "reasoning_effort": {
           "oneOf": [
@@ -221,9 +292,9 @@
         "protocol_lock": {
           "oneOf": [
             {
+              "type": "string",
               "minLength": 1,
-              "pattern": "^(?!/)(?!\\./)(?!.*//)(?!.*(?:^|/)\\.\\.?(/|$))(?!.*\\/$).+$",
-              "type": "string"
+              "pattern": "^(?!/)(?!\\./)(?!.*//)(?!.*(?:^|/)\\.\\.?(/|$))(?!.*\\/$).+$"
             },
             {
               "type": "null"
@@ -231,76 +302,12 @@
           ]
         },
         "protocol_lock_sha256": {
-          "oneOf": [
-            {
-              "pattern": "^[0-9a-f]{64}$",
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ]
+          "$ref": "#/$defs/nullableSha256"
         },
         "execution_policy": {
-          "oneOf": [
-            {
-              "additionalProperties": false,
-              "properties": {
-                "concurrency": {
-                  "const": "concurrent"
-                },
-                "release_authoritative": {
-                  "const": true
-                }
-              },
-              "required": [
-                "concurrency",
-                "release_authoritative"
-              ],
-              "type": "object"
-            },
-            {
-              "additionalProperties": false,
-              "properties": {
-                "concurrency": {
-                  "const": "serialized"
-                },
-                "release_authoritative": {
-                  "const": false
-                }
-              },
-              "required": [
-                "concurrency",
-                "release_authoritative"
-              ],
-              "type": "object"
-            }
-          ]
-        },
-        "name": {
-          "minLength": 1,
-          "type": "string"
-        },
-        "requested_model": {
-          "minLength": 1,
-          "type": "string"
-        },
-        "version": {
-          "minLength": 1,
-          "type": "string"
+          "$ref": "#/$defs/executionPolicy"
         }
       },
-      "required": [
-        "name",
-        "version",
-        "requested_model",
-        "executable_sha256",
-        "reasoning_effort",
-        "billing_basis",
-        "protocol_lock",
-        "protocol_lock_sha256",
-        "execution_policy"
-      ],
       "allOf": [
         {
           "if": {
@@ -410,10 +417,57 @@
             }
           }
         }
-      ],
-      "type": "object"
+      ]
     },
-    "generator_adapter_binding": {
+    "adapterBinding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "adapter_id",
+        "authority_scope",
+        "binding_sha256",
+        "capability_sha256",
+        "config_sha256",
+        "contract_revision",
+        "role",
+        "runtime_provenance_sha256"
+      ],
+      "properties": {
+        "adapter_id": {
+          "$ref": "#/$defs/identifier"
+        },
+        "authority_scope": {
+          "enum": [
+            "diagnostic",
+            "production",
+            "test"
+          ]
+        },
+        "binding_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "capability_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "config_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "contract_revision": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "role": {
+          "enum": [
+            "comparison",
+            "generation"
+          ]
+        },
+        "runtime_provenance_sha256": {
+          "$ref": "#/$defs/sha256"
+        }
+      }
+    },
+    "generatorAdapterBinding": {
       "$ref": "#/$defs/adapterBinding",
       "properties": {
         "role": {
@@ -421,7 +475,7 @@
         }
       }
     },
-    "comparator_adapter_binding": {
+    "comparatorAdapterBinding": {
       "$ref": "#/$defs/adapterBinding",
       "properties": {
         "role": {
@@ -429,150 +483,148 @@
         }
       }
     },
-    "manifest_sha256": {
-      "pattern": "^[0-9a-f]{64}$",
-      "type": "string"
-    },
-    "evaluation_mode": {
-      "enum": [
-        "judged",
-        "objective_only"
-      ]
-    },
-    "objective_acceptance_policy_id": {
-      "pattern": "^[a-z0-9][a-z0-9._-]*$",
-      "type": "string"
-    },
-    "objective_acceptance_policy_sha256": {
-      "pattern": "^[0-9a-f]{64}$",
-      "type": "string"
-    },
-    "original_commit": {
-      "pattern": "^[0-9a-f]{40}$",
-      "type": "string"
-    },
-    "source_bindings": {
-      "items": {
-        "additionalProperties": false,
-        "properties": {
-          "kind": {
-            "enum": [
-              "git_ref",
-              "without_skill",
-              "worktree"
+    "sourceBinding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "variant_id",
+        "kind",
+        "source_commit",
+        "source_sha256_by_case"
+      ],
+      "properties": {
+        "variant_id": {
+          "$ref": "#/$defs/identifier"
+        },
+        "kind": {
+          "enum": [
+            "git_ref",
+            "without_skill",
+            "worktree"
+          ]
+        },
+        "source_commit": {
+          "oneOf": [
+            {
+              "type": "string",
+              "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "source_sha256_by_case": {
+          "type": "object",
+          "minProperties": 1,
+          "propertyNames": {
+            "$ref": "#/$defs/identifier"
+          },
+          "additionalProperties": {
+            "$ref": "#/$defs/sha256"
+          }
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "without_skill"
+              }
+            },
+            "required": [
+              "kind"
             ]
           },
-          "source_commit": {
-            "oneOf": [
-              {
-                "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$",
-                "type": "string"
-              },
-              {
+          "then": {
+            "properties": {
+              "source_commit": {
                 "type": "null"
               }
-            ]
+            }
           },
-          "source_sha256_by_case": {
-            "additionalProperties": {
-              "pattern": "^[0-9a-f]{64}$",
-              "type": "string"
-            },
-            "minProperties": 1,
-            "propertyNames": {
-              "pattern": "^[a-z0-9][a-z0-9._-]*$"
-            },
-            "type": "object"
-          },
-          "variant_id": {
-            "pattern": "^[a-z0-9][a-z0-9._-]*$",
-            "type": "string"
-          }
-        },
-        "required": [
-          "variant_id",
-          "kind",
-          "source_commit",
-          "source_sha256_by_case"
-        ],
-        "allOf": [
-          {
-            "if": {
-              "properties": {
-                "kind": {
-                  "const": "without_skill"
-                }
-              },
-              "required": [
-                "kind"
-              ]
-            },
-            "then": {
-              "properties": {
-                "source_commit": {
-                  "type": "null"
-                }
-              }
-            },
-            "else": {
-              "properties": {
-                "source_commit": {
-                  "type": "string"
-                }
+          "else": {
+            "properties": {
+              "source_commit": {
+                "type": "string"
               }
             }
           }
-        ],
-        "type": "object"
-      },
-      "minItems": 1,
-      "type": "array"
+        }
+      ]
     },
-    "consumption_record_path": {
-      "minLength": 1,
-      "pattern": "^/",
-      "type": "string"
+    "comparisonBinding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "control",
+        "treatment",
+        "repetitions",
+        "comparator_order"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/identifier"
+        },
+        "control": {
+          "$ref": "#/$defs/identifier"
+        },
+        "treatment": {
+          "$ref": "#/$defs/identifier"
+        },
+        "repetitions": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "comparator_order": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
     },
-    "plan_id": {
-      "pattern": "^[a-z0-9][a-z0-9._-]*$",
-      "type": "string"
+    "caseBinding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "case_tree_sha256",
+        "shared_tree_sha256",
+        "release_case_fingerprint",
+        "skill",
+        "critical_expectations"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/identifier"
+        },
+        "case_tree_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "shared_tree_sha256": {
+          "$ref": "#/$defs/nullableSha256"
+        },
+        "release_case_fingerprint": {
+          "$ref": "#/$defs/sha256"
+        },
+        "skill": {
+          "type": "string",
+          "pattern": "^[a-z0-9][a-z0-9-]*$"
+        },
+        "critical_expectations": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/identifier"
+          }
+        }
+      }
     },
     "provenance": {
+      "type": "object",
       "additionalProperties": false,
-      "properties": {
-        "assurance": {
-          "enum": [
-            "operator-declared-review-records",
-            "trusted-reviewed-attestation"
-          ]
-        },
-        "freeze_record": {
-          "minLength": 1,
-          "type": "string"
-        },
-        "frozen_before_candidate_evaluation": {
-          "const": true
-        },
-        "privacy_claim": {
-          "const": "not-a-cryptographic-privacy-proof"
-        },
-        "reviewed_by": {
-          "items": {
-            "minLength": 1,
-            "type": "string"
-          },
-          "minItems": 1,
-          "type": "array",
-          "uniqueItems": true
-        },
-        "seal_record": {
-          "minLength": 1,
-          "type": "string"
-        },
-        "sealed_after_independent_review": {
-          "const": true
-        }
-      },
       "required": [
         "assurance",
         "privacy_claim",
@@ -582,264 +634,37 @@
         "freeze_record",
         "seal_record"
       ],
-      "type": "object"
-    },
-    "schema_version": {
-      "enum": [
-        2,
-        3,
-        4
-      ]
-    },
-    "seed": {
-      "minimum": 0,
-      "type": "integer"
-    },
-    "status": {
-      "const": "sealed"
-    }
-  },
-  "required": [
-    "schema_version",
-    "plan_id",
-    "status",
-    "manifest_sha256",
-    "generator_provider",
-    "consumption_record_path",
-    "seed",
-    "comparison_profile",
-    "cases",
-    "provenance"
-  ],
-  "allOf": [
-    {
-      "if": {
-        "properties": {
-          "schema_version": {
-            "const": 4
+      "properties": {
+        "assurance": {
+          "const": "operator-declared-review-records"
+        },
+        "privacy_claim": {
+          "const": "not-a-cryptographic-privacy-proof"
+        },
+        "frozen_before_candidate_evaluation": {
+          "const": true
+        },
+        "sealed_after_independent_review": {
+          "const": true
+        },
+        "reviewed_by": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1
           }
         },
-        "required": [
-          "schema_version"
-        ]
-      },
-      "then": {
-        "required": [
-          "generator_adapter_binding"
-        ],
-        "allOf": [
-          {
-            "if": {
-              "properties": {
-                "evaluation_mode": {
-                  "const": "judged"
-                }
-              },
-              "required": [
-                "evaluation_mode"
-              ]
-            },
-            "then": {
-              "required": [
-                "comparator_adapter_binding"
-              ]
-            },
-            "else": {
-              "not": {
-                "required": [
-                  "comparator_adapter_binding"
-                ]
-              }
-            }
-          }
-        ]
-      },
-      "else": {
-        "not": {
-          "anyOf": [
-            {
-              "required": [
-                "generator_adapter_binding"
-              ]
-            },
-            {
-              "required": [
-                "comparator_adapter_binding"
-              ]
-            }
-          ]
+        "freeze_record": {
+          "type": "string",
+          "minLength": 1
+        },
+        "seal_record": {
+          "type": "string",
+          "minLength": 1
         }
       }
     }
-  ],
-  "oneOf": [
-    {
-      "not": {
-        "anyOf": [
-          {
-            "required": [
-              "source_bindings"
-            ]
-          },
-          {
-            "required": [
-              "evaluation_mode"
-            ]
-          },
-          {
-            "required": [
-              "comparator_profile_id"
-            ]
-          },
-          {
-            "required": [
-              "comparator_profile_descriptor_sha256"
-            ]
-          },
-          {
-            "required": [
-              "comparator_profile_authority_registry_sha256"
-            ]
-          },
-          {
-            "required": [
-              "objective_acceptance_policy_id"
-            ]
-          },
-          {
-            "required": [
-              "objective_acceptance_policy_sha256"
-            ]
-          },
-          {
-            "required": [
-              "generator_adapter_binding"
-            ]
-          },
-          {
-            "required": [
-              "comparator_adapter_binding"
-            ]
-          }
-        ]
-      },
-      "properties": {
-        "schema_version": {
-          "const": 2
-        }
-      },
-      "required": [
-        "candidate_commit",
-        "original_commit",
-        "comparator_release_sha256",
-        "comparator_calibration_evidence_sha256"
-      ]
-    },
-    {
-      "not": {
-        "anyOf": [
-          {
-            "required": [
-              "candidate_commit"
-            ]
-          },
-          {
-            "required": [
-              "original_commit"
-            ]
-          },
-          {
-            "required": [
-              "objective_acceptance_policy_id"
-            ]
-          },
-          {
-            "required": [
-              "objective_acceptance_policy_sha256"
-            ]
-          }
-        ]
-      },
-      "properties": {
-        "evaluation_mode": {
-          "const": "judged"
-        },
-        "schema_version": {
-          "enum": [
-            3,
-            4
-          ]
-        }
-      },
-      "required": [
-        "source_bindings",
-        "evaluation_mode",
-        "comparator_release_sha256",
-        "comparator_calibration_evidence_sha256",
-        "comparator_profile_id",
-        "comparator_profile_descriptor_sha256",
-        "comparator_profile_authority_registry_sha256"
-      ]
-    },
-    {
-      "not": {
-        "anyOf": [
-          {
-            "required": [
-              "candidate_commit"
-            ]
-          },
-          {
-            "required": [
-              "original_commit"
-            ]
-          },
-          {
-            "required": [
-              "comparator_release_sha256"
-            ]
-          },
-          {
-            "required": [
-              "comparator_calibration_evidence_sha256"
-            ]
-          },
-          {
-            "required": [
-              "comparator_profile_id"
-            ]
-          },
-          {
-            "required": [
-              "comparator_profile_descriptor_sha256"
-            ]
-          },
-          {
-            "required": [
-              "comparator_profile_authority_registry_sha256"
-            ]
-          }
-        ]
-      },
-      "properties": {
-        "evaluation_mode": {
-          "const": "objective_only"
-        },
-        "schema_version": {
-          "enum": [
-            3,
-            4
-          ]
-        }
-      },
-      "required": [
-        "source_bindings",
-        "evaluation_mode",
-        "objective_acceptance_policy_id",
-        "objective_acceptance_policy_sha256"
-      ]
-    }
-  ],
-  "title": "Skivolve sealed holdout plan",
-  "type": "object"
+  }
 }

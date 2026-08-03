@@ -4,6 +4,10 @@ All notable changes to Skivolve are documented in this file. The format follows 
 
 ## [Unreleased]
 
+### Fixed
+
+- Accepted bounded Codex collaboration lifecycles without letting child-agent traffic mutate the main result, and cleaned unreadable evaluator runtime directories without following symlinks.
+
 ## [0.5.0] - 2026-07-29
 
 ### Changed

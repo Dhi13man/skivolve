@@ -34,6 +34,16 @@ from .providers import (
 )
 
 
+class ProviderTimeoutError(ProviderError):
+    """Raised when a Codex operation exceeds its configured deadline."""
+
+    def __init__(self, message: str, *, cleanup_confirmed: bool = False) -> None:
+        if type(cleanup_confirmed) is not bool:
+            raise TypeError("cleanup_confirmed must be a bool")
+        super().__init__(message)
+        self.cleanup_confirmed = cleanup_confirmed
+
+
 _MAX_FRAME_BYTES = 8 * 1024 * 1024
 _MAX_MESSAGES = 20_000
 _MAX_PAGES = 64
@@ -483,7 +493,7 @@ def _require_exact_keys(
 def _remaining(deadline: float, label: str) -> float:
     remaining = deadline - time.monotonic()
     if remaining <= 0:
-        raise ProviderError(f"{label} timed out")
+        raise ProviderTimeoutError(f"{label} timed out")
     return remaining
 
 
@@ -2412,7 +2422,7 @@ class _ProcessTransport:
             while view:
                 events = selector.select(_remaining(deadline, "Codex protocol write"))
                 if not events:
-                    raise ProviderError("Codex protocol write timed out")
+                    raise ProviderTimeoutError("Codex protocol write timed out")
                 try:
                     written = os.write(self._stdin_fd, view)
                 except BlockingIOError:
@@ -2442,7 +2452,7 @@ class _ProcessTransport:
                     raise ProviderError("Codex protocol frame exceeds the byte limit")
                 events = selector.select(_remaining(deadline, "Codex protocol read"))
                 if not events:
-                    raise ProviderError("Codex protocol read timed out")
+                    raise ProviderTimeoutError("Codex protocol read timed out")
                 try:
                     chunk = os.read(self._stdout_fd, 64 * 1024)
                 except BlockingIOError:
@@ -3931,6 +3941,7 @@ class CodexAppServerProvider:
         started = time.monotonic()
         transport: _Transport | None = None
         outcome: _TurnOutcome | None = None
+        timeout_error: ProviderTimeoutError | None = None
         sandbox: dict[str, Any] | None = None
         expected_command_sha256: str | None = None
         coordination_root = _validate_private_directory(
@@ -4028,17 +4039,20 @@ class CodexAppServerProvider:
                             raise ProviderError(
                                 "Codex system context retained the host skill path"
                             )
-                    outcome = _AppServerProtocol(
-                        session,
-                        model=self._config.model,
-                        reasoning_effort=self._config.reasoning_effort,
-                        workspace=mounted_paths["work"],
-                        system_context=system_context,
-                        locked_efforts=self._lock.model_efforts[self._config.model],
-                        locked_thread_cli_version=self._lock.thread_cli_version,
-                        expected_codex_home=mounted_paths["codex-home"],
-                        on_dispatched=request.on_dispatched,
-                    ).run(request.prompt, deadline)
+                    try:
+                        outcome = _AppServerProtocol(
+                            session,
+                            model=self._config.model,
+                            reasoning_effort=self._config.reasoning_effort,
+                            workspace=mounted_paths["work"],
+                            system_context=system_context,
+                            locked_efforts=self._lock.model_efforts[self._config.model],
+                            locked_thread_cli_version=self._lock.thread_cli_version,
+                            expected_codex_home=mounted_paths["codex-home"],
+                            on_dispatched=request.on_dispatched,
+                        ).run(request.prompt, deadline)
+                    except ProviderTimeoutError as exc:
+                        timeout_error = exc
                 finally:
                     session.close()
                     if not self._transport_is_injected:
@@ -4095,6 +4109,10 @@ class CodexAppServerProvider:
                             )
                     finally:
                         _remove_invocation_root(invocation_root)
+        if timeout_error is not None:
+            raise ProviderTimeoutError(
+                str(timeout_error), cleanup_confirmed=True
+            ) from timeout_error
         assert outcome is not None and sandbox is not None
         return self._build_result(
             request,

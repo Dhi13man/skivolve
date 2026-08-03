@@ -49,12 +49,15 @@ from skivolve.codex_app_server import (  # noqa: E402
     _load_protocol_lock,
     _linux_process_start_time,
     _prepare_workspace_runtime,
+    _remaining,
+    _remove_invocation_root,
     _static_config,
     _resolve_gate_shell,
     _resolve_system_tool,
     validate_codex_protocol_lock,
     _validate_cli_version_output,
     CodexAppServerProvider,
+    ProviderTimeoutError,
 )
 from skivolve.manifest import ProviderConfig  # noqa: E402
 from skivolve.providers import AgentRequest, ProviderError  # noqa: E402
@@ -610,6 +613,18 @@ def _protocol(
 
 
 class CodexProtocolTests(unittest.TestCase):
+    def test_expired_deadline_raises_typed_timeout(self) -> None:
+        with self.assertRaisesRegex(
+            ProviderTimeoutError, "operation timed out"
+        ) as caught:
+            _remaining(time.monotonic() - 1, "operation")
+        self.assertFalse(caught.exception.cleanup_confirmed)
+        confirmed = ProviderTimeoutError("operation timed out", cleanup_confirmed=True)
+        self.assertTrue(confirmed.cleanup_confirmed)
+        self.assertIsInstance(confirmed, ProviderError)
+        with self.assertRaisesRegex(TypeError, "cleanup_confirmed"):
+            ProviderTimeoutError("operation timed out", cleanup_confirmed=1)  # type: ignore[arg-type]
+
     def test_happy_path_paginates_disables_skills_merges_quota_and_uses_last_usage(
         self,
     ) -> None:
@@ -2851,6 +2866,160 @@ class CodexProviderTests(unittest.TestCase):
         with self.assertRaisesRegex(ProviderError, "rerouted"):
             provider.run_agent(self.request())
         self.assertTrue(self.transport.closed)
+
+    def test_timeout_is_confirmed_only_after_cleanup_and_cleanup_failure_wins(
+        self,
+    ) -> None:
+        def exercise(*, fail_workspace_cleanup: bool) -> tuple[list[str], Exception]:
+            events: list[str] = []
+
+            def assert_no_active_confirmed_timeout() -> None:
+                active = sys.exception()
+                if isinstance(active, ProviderTimeoutError):
+                    self.assertFalse(active.cleanup_confirmed)
+
+            @contextlib.contextmanager
+            def record_exit(name: str, value: Any) -> Iterator[Any]:
+                try:
+                    yield value
+                finally:
+                    assert_no_active_confirmed_timeout()
+                    events.append(name)
+
+            class TimeoutTransport(ScriptedTransport):
+                def __init__(
+                    self,
+                    command: tuple[str, ...],
+                    cwd: Path,
+                    _environment: dict[str, str],
+                    _unit_name: str,
+                    **_callbacks: Any,
+                ) -> None:
+                    super().__init__(cwd)
+                    self.evidence.update(
+                        cleanup_confirmed=False,
+                        command_sha256=_command_sha256(command),
+                        kind="systemd-run-user+codex-permission-profile",
+                        launch_confirmed=True,
+                    )
+
+                def receive(self, _deadline: float) -> bytes:
+                    events.append("protocol_timeout")
+                    raise ProviderTimeoutError("Codex protocol read timed out")
+
+                def close(self) -> None:
+                    assert_no_active_confirmed_timeout()
+                    super().close()
+                    self.evidence["cleanup_confirmed"] = True
+                    events.append("transport_close")
+
+            poison_store = mock.Mock()
+            poison_store.lock.side_effect = lambda _deadline: record_exit(
+                "provider_lock_exit", (1, 2)
+            )
+            poison_store.recover.return_value = False
+            poison_store.arm.side_effect = lambda *_args: events.append("poison_arm")
+
+            def disarm_poison(
+                _binding: _PoisonBinding, evidence: dict[str, Any]
+            ) -> None:
+                assert_no_active_confirmed_timeout()
+                self.assertIs(evidence["cleanup_confirmed"], True)
+                events.append("poison_disarm")
+
+            poison_store.disarm.side_effect = disarm_poison
+
+            auth_checks = 0
+
+            def assert_auth_path_matches_descriptor(
+                _path: Path, _descriptor: int
+            ) -> tuple[int, int]:
+                nonlocal auth_checks
+                auth_checks += 1
+                if auth_checks == 3:
+                    assert_no_active_confirmed_timeout()
+                    events.append("post_auth_identity")
+                return (3, 4)
+
+            def cleanup_workspace_runtime(runtime: Any) -> None:
+                assert_no_active_confirmed_timeout()
+                _cleanup_workspace_runtime(runtime)
+                events.append("workspace_cleanup")
+                if fail_workspace_cleanup:
+                    raise ProviderError("injected workspace cleanup failure")
+
+            def remove_invocation_root(path: Path) -> None:
+                assert_no_active_confirmed_timeout()
+                _remove_invocation_root(path)
+                events.append("invocation_root_cleanup")
+
+            provider = CodexAppServerProvider(
+                self.config(),
+                transport_factory=self.factory,
+                auth_path=self.auth,
+                runtime_root=self.runtime,
+                validate_lock=False,
+            )
+            self.addCleanup(provider.close)
+            provider._transport_is_injected = False
+            with (
+                mock.patch(
+                    "skivolve.codex_app_server._ProcessTransport", TimeoutTransport
+                ),
+                mock.patch(
+                    "skivolve.codex_app_server._CleanupPoisonStore",
+                    return_value=poison_store,
+                ),
+                mock.patch(
+                    "skivolve.codex_app_server._auth_lock",
+                    side_effect=lambda *_args: record_exit("auth_lock_exit", None),
+                ),
+                mock.patch(
+                    "skivolve.codex_app_server._held_auth_descriptor",
+                    side_effect=lambda *_args: record_exit("auth_descriptor_exit", 1),
+                ),
+                mock.patch(
+                    "skivolve.codex_app_server._assert_auth_path_matches_descriptor",
+                    assert_auth_path_matches_descriptor,
+                ),
+                mock.patch(
+                    "skivolve.codex_app_server._cleanup_workspace_runtime",
+                    cleanup_workspace_runtime,
+                ),
+                mock.patch(
+                    "skivolve.codex_app_server._remove_invocation_root",
+                    remove_invocation_root,
+                ),
+            ):
+                try:
+                    provider.run_agent(self.request())
+                except Exception as exc:
+                    return events, exc
+            self.fail("timeout transport unexpectedly returned a provider result")
+
+        expected_order = (
+            "poison_arm",
+            "protocol_timeout",
+            "transport_close",
+            "poison_disarm",
+            "workspace_cleanup",
+            "post_auth_identity",
+            "invocation_root_cleanup",
+            "auth_descriptor_exit",
+            "auth_lock_exit",
+            "provider_lock_exit",
+        )
+        for fail_workspace_cleanup in (False, True):
+            with self.subTest(fail_workspace_cleanup=fail_workspace_cleanup):
+                events, error = exercise(fail_workspace_cleanup=fail_workspace_cleanup)
+                positions = [events.index(event) for event in expected_order]
+                self.assertEqual(positions, sorted(positions))
+                if fail_workspace_cleanup:
+                    self.assertIs(type(error), ProviderError)
+                    self.assertEqual(str(error), "injected workspace cleanup failure")
+                else:
+                    self.assertIs(type(error), ProviderTimeoutError)
+                    self.assertTrue(error.cleanup_confirmed)
 
     def test_workspace_runtime_cleanup_handles_unreadable_directories_safely(
         self,

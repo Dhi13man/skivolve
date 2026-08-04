@@ -255,6 +255,7 @@ class ScriptedTransport:
         identifier_sentinel: str | None = None,
         omit_item_completed: bool = False,
         not_loaded_has_items: bool = False,
+        error_will_retry: bool | None = None,
         skill_disable_succeeds: bool = True,
         thread_cli_version: str = "0.144.3",
         turn_error: dict[str, Any] | None = None,
@@ -271,6 +272,7 @@ class ScriptedTransport:
         self.full_has_non_object_item = full_has_non_object_item
         self.omit_item_completed = omit_item_completed
         self.not_loaded_has_items = not_loaded_has_items
+        self.error_will_retry = error_will_retry
         self.thread_id = (
             f"{identifier_sentinel}.thread" if identifier_sentinel else "thread-1"
         )
@@ -435,6 +437,28 @@ class ScriptedTransport:
             self._queue_turn_events()
 
     def _queue_turn_events(self) -> None:
+        if self.error_will_retry is not None:
+            self.incoming.append(
+                _line(
+                    {
+                        "method": "error",
+                        "params": {
+                            "error": {
+                                "additionalDetails": None,
+                                "codexErrorInfo": {
+                                    "responseStreamDisconnected": {
+                                        "httpStatusCode": None
+                                    }
+                                },
+                                "message": "SENTINEL_MUST_NOT_BE_DISCLOSED",
+                            },
+                            "threadId": self.thread_id,
+                            "turnId": self.turn_id,
+                            "willRetry": self.error_will_retry,
+                        },
+                    }
+                )
+            )
         if self.reroute:
             self.incoming.append(
                 _line(
@@ -698,6 +722,74 @@ class CodexProtocolTests(unittest.TestCase):
                 locked_thread_cli_version="0.144.3",
                 expected_codex_home=Path("/runtime/codex-home"),
             ).run("request", time.monotonic() + 5)
+
+    def test_retryable_error_notification_does_not_interrupt_turn(self) -> None:
+        transport = ScriptedTransport(Path("/runtime/work"), error_will_retry=True)
+
+        outcome = _protocol(transport).run("request", time.monotonic() + 5)
+
+        self.assertEqual(outcome.final_output, "completed fixture")
+
+    def test_non_retryable_error_notification_fails_closed(self) -> None:
+        transport = ScriptedTransport(Path("/runtime/work"), error_will_retry=False)
+
+        with self.assertRaises(ProviderError) as caught:
+            _protocol(transport).run("request", time.monotonic() + 5)
+        self.assertEqual(str(caught.exception), "Codex reported a turn error")
+        self.assertNotIn("SENTINEL_MUST_NOT_BE_DISCLOSED", str(caught.exception))
+
+    def test_error_notification_requires_boolean_retry_state(self) -> None:
+        protocol = _protocol(QueueTransport([]))
+        protocol._thread_id = "thread-1"
+        protocol._turn_id = "turn-1"
+        for retry_state in (None, 0, 1, "true", {}):
+            with self.subTest(retry_state=retry_state):
+                with self.assertRaisesRegex(ProviderError, "invalid retry state"):
+                    protocol._handle_notification(
+                        "error",
+                        {
+                            "error": {
+                                "additionalDetails": None,
+                                "codexErrorInfo": None,
+                                "message": "untrusted",
+                            },
+                            "threadId": "thread-1",
+                            "turnId": "turn-1",
+                            "willRetry": retry_state,
+                        },
+                    )
+
+    def test_retryable_error_notification_validates_shape_and_scope(self) -> None:
+        protocol = _protocol(QueueTransport([]))
+        protocol._thread_id = "thread-1"
+        protocol._turn_id = "turn-1"
+        valid = {
+            "error": {
+                "additionalDetails": None,
+                "codexErrorInfo": None,
+                "message": "untrusted",
+            },
+            "threadId": "thread-1",
+            "turnId": "turn-1",
+            "willRetry": True,
+        }
+        invalid = {
+            "missing error field": {
+                **valid,
+                "error": {"codexErrorInfo": None, "message": "untrusted"},
+            },
+            "invalid message": {
+                **valid,
+                "error": {**valid["error"], "message": None},
+            },
+            "wrong thread": {**valid, "threadId": "thread-2"},
+            "wrong turn": {**valid, "turnId": "turn-2"},
+        }
+
+        for label, params in invalid.items():
+            with self.subTest(label=label):
+                with self.assertRaises(ProviderError):
+                    protocol._handle_notification("error", params)
 
     def test_missing_usage_rejects_completed_turn(self) -> None:
         transport = ScriptedTransport(Path("/runtime/work"), omit_usage=True)

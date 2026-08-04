@@ -1653,7 +1653,25 @@ class _AppServerProtocol:
         if method == "model/rerouted":
             raise ProviderError("Codex rerouted the pinned model")
         if method == "error":
-            _require_object(params.get("error"), "error notification")
+            _require_exact_keys(
+                params,
+                "error notification",
+                required={"error", "threadId", "turnId", "willRetry"},
+            )
+            error = _require_object(params.get("error"), "error notification.error")
+            _require_exact_keys(
+                error,
+                "error notification.error",
+                required={"additionalDetails", "codexErrorInfo", "message"},
+            )
+            _require_string(error.get("message"), "error notification.error.message")
+            if not self._matches_turn(params) and not self._matches_collab_turn(params):
+                raise ProviderError("Codex error notification changed turn scope")
+            will_retry = params.get("willRetry")
+            if type(will_retry) is not bool:
+                raise ProviderError("Codex error notification has invalid retry state")
+            if will_retry:
+                return
             raise ProviderError("Codex reported a turn error")
         if method == "account/rateLimits/updated":
             update = _sanitize_rate_snapshot(

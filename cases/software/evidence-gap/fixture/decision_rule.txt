@@ -1,0 +1,1 @@
+Adoption requires evidence on the exact release candidate under the production-shaped workload, including p99 latency. Median-only evidence is insufficient.

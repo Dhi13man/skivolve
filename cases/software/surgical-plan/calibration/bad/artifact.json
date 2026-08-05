@@ -1,0 +1,8 @@
+{
+  "level": "greenfield",
+  "steps": [
+    "Redesign retries."
+  ],
+  "verification": "Review it.",
+  "non_goals": []
+}

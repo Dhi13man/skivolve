@@ -3588,6 +3588,7 @@ class EvalRunner:
                 normalized_artifact,
                 result_root,
                 workspace_read_only=final_output_artifact,
+                agent_workspace_mutated=before != after_agent,
             )
             verifier_after_hash = _tree_hash(verifier_workspace)
             verifier_json["workspace_before_sha256"] = verifier_before_hash
@@ -3798,6 +3799,7 @@ class EvalRunner:
         result_root: Path,
         *,
         workspace_read_only: bool,
+        agent_workspace_mutated: bool,
     ) -> dict[str, Any]:
         command = self._verifier_commands.get(case.id)
         if command is None:
@@ -3945,6 +3947,7 @@ class EvalRunner:
                 f"EVAL_ARTIFACT_PATH={mounted_artifact}",
                 f"EVAL_ARTIFACT_KIND={artifact.kind}",
                 f"EVAL_ARTIFACT_SHA256={artifact.sha256}",
+                f"EVAL_AGENT_WORKSPACE_MUTATED={int(agent_workspace_mutated)}",
                 f"EVAL_CASE_ROOT={mounted_case}",
                 *(
                     [f"EVAL_SHARED_ROOT={mounted_shared}"]
@@ -4001,6 +4004,7 @@ class EvalRunner:
                 "read_only": True,
             },
             "workspace_read_only": workspace_read_only,
+            "agent_workspace_mutated": agent_workspace_mutated,
             "go_root": str(go_root) if go_root is not None else None,
             "gcc_exec_prefix": (
                 str(gcc_exec_prefix) if gcc_exec_prefix is not None else None

@@ -1,0 +1,11 @@
+{
+  "schema_version": 1,
+  "must_pass": [
+    "balanced-source-facts",
+    "material-uncertainty",
+    "decision-resolving-check"
+  ],
+  "must_fail": [
+    "research-output-restraint"
+  ]
+}

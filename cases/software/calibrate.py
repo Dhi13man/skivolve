@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -210,23 +211,61 @@ def assert_expectation(
         )
 
 
-def discover_good_variants(calibration_root: Path) -> tuple[str, ...]:
+def _material_name(artifact_kind: str) -> str:
+    if artifact_kind == "workspace_diff":
+        return "apply.py"
+    if artifact_kind == "final_output_json":
+        return "artifact.json"
+    raise AssertionError(f"unsupported calibration artifact kind: {artifact_kind}")
+
+
+def discover_variants(calibration_root: Path, artifact_kind: str) -> tuple[str, ...]:
+    material_name = _material_name(artifact_kind)
+    return tuple(
+        sorted(
+            path.parent.relative_to(calibration_root).as_posix()
+            for path in calibration_root.rglob(material_name)
+        )
+    )
+
+
+def discover_good_variants(
+    calibration_root: Path, artifact_kind: str = "workspace_diff"
+) -> tuple[str, ...]:
     candidates = sorted(
         path
         for path in calibration_root.iterdir()
         if path.is_dir() and (path.name == "good" or path.name.startswith("good-"))
     )
+    material_name = _material_name(artifact_kind)
     missing = [
-        path.name for path in candidates if not path.joinpath("apply.py").is_file()
+        path.name for path in candidates if not path.joinpath(material_name).is_file()
     ]
     if missing:
         raise AssertionError(
-            f"known-good calibration directories lack apply.py: {missing}"
+            f"known-good calibration directories lack {material_name}: {missing}"
         )
     variants = tuple(path.name for path in candidates)
     if "good" not in variants:
         raise AssertionError("canonical good calibration is missing")
     return variants
+
+
+def workspace_fingerprint(workspace: Path) -> str:
+    digest = hashlib.sha256()
+    for path in sorted(workspace.rglob("*")):
+        relative = path.relative_to(workspace).as_posix()
+        digest.update(relative.encode("utf-8"))
+        digest.update(path.lstat().st_mode.to_bytes(4, "big"))
+        if path.is_symlink():
+            digest.update(b"symlink\0")
+            digest.update(os.readlink(path).encode("utf-8"))
+        elif path.is_file():
+            digest.update(b"file\0")
+            digest.update(path.read_bytes())
+        elif path.is_dir():
+            digest.update(b"directory\0")
+    return digest.hexdigest()
 
 
 def require_complete_expectations(
@@ -255,25 +294,49 @@ def calibrate(
     fixture = SUITE_ROOT / str(case["fixture_dir"])
     prompt = SUITE_ROOT / str(case["prompt_file"])
     verifier_argv = [str(part) for part in case["verifier"]["argv"]]  # type: ignore[index]
+    artifact_kind = str(case["artifact_contract"]["kind"])  # type: ignore[index]
     case_dir = prompt.parent
-    apply_script = case_dir / "calibration" / variant / "apply.py"
+    calibration_dir = case_dir / "calibration" / variant
+    apply_script = calibration_dir / "apply.py"
+    artifact_path = calibration_dir / "artifact.json"
 
     safe_variant = variant.replace("/", "__")
     with tempfile.TemporaryDirectory(prefix=f"{case_id}-{safe_variant}-") as temp:
         workspace = Path(temp) / "workspace"
         shutil.copytree(fixture, workspace)
+        before = workspace_fingerprint(workspace)
 
-        applied = run(
-            [sys.executable, str(apply_script), str(workspace)],
-            cwd=case_dir,
-            timeout_seconds=60,
-        )
-        if applied.returncode != 0:
-            raise AssertionError(
-                f"{case_id}/{variant}: calibration patch failed: {applied.stderr.strip()}"
+        if apply_script.is_file():
+            applied = run(
+                [sys.executable, str(apply_script), str(workspace)],
+                cwd=case_dir,
+                timeout_seconds=60,
             )
+            if applied.returncode != 0:
+                raise AssertionError(
+                    f"{case_id}/{variant}: calibration patch failed: "
+                    f"{applied.stderr.strip()}"
+                )
+        elif artifact_kind == "workspace_diff":
+            raise AssertionError(f"{case_id}/{variant}: calibration lacks apply.py")
 
         env = verifier_environment(workspace, case_dir, tool_environment)
+        if artifact_kind == "final_output_json":
+            if not artifact_path.is_file():
+                raise AssertionError(
+                    f"{case_id}/{variant}: calibration lacks artifact.json"
+                )
+            content = artifact_path.read_bytes()
+            env.update(
+                {
+                    "EVAL_ARTIFACT_PATH": str(artifact_path),
+                    "EVAL_ARTIFACT_KIND": artifact_kind,
+                    "EVAL_ARTIFACT_SHA256": hashlib.sha256(content).hexdigest(),
+                    "EVAL_AGENT_WORKSPACE_MUTATED": str(
+                        int(before != workspace_fingerprint(workspace))
+                    ),
+                }
+            )
         verifier_timeout = int(case["verifier"]["timeout_seconds"])  # type: ignore[index]
         verdict = parse_verdict(
             run(
@@ -300,7 +363,7 @@ def calibrate(
         raise AssertionError(
             f"{case_id}: assertion IDs {sorted(actual_ids)} != {sorted(expected_ids)}"
         )
-    expectation = load_expectation(apply_script.with_name("expect.json"))
+    expectation = load_expectation(calibration_dir / "expect.json")
     assert_expectation(case_id, variant, verdict, expectation)
     return verdict
 
@@ -316,12 +379,12 @@ def main() -> int:
             try:
                 prompt = SUITE_ROOT / case["prompt_file"]
                 calibration_root = prompt.parent / "calibration"
-                good_variants = discover_good_variants(calibration_root)
-                adversarial_root = calibration_root / "adversarial"
-                adversarial_variants = sorted(
-                    path.relative_to(calibration_root).as_posix()
-                    for path in adversarial_root.iterdir()
-                    if path.is_dir() and path.joinpath("apply.py").is_file()
+                artifact_kind = str(case["artifact_contract"]["kind"])
+                good_variants = discover_good_variants(calibration_root, artifact_kind)
+                adversarial_variants = tuple(
+                    variant
+                    for variant in discover_variants(calibration_root, artifact_kind)
+                    if variant.startswith("adversarial/")
                 )
                 require_complete_expectations(
                     calibration_root,

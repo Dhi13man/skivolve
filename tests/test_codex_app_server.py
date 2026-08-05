@@ -1261,6 +1261,34 @@ class CodexProtocolTests(unittest.TestCase):
         self.assertEqual(protocol._collab_thread_ids, {"child-1"})
         self.assertEqual(protocol._pending_spawn_items, {})
 
+    def test_completed_spawn_requires_exactly_one_receiver(self) -> None:
+        initial = {
+            "agentsStates": {},
+            "id": "item-1",
+            "receiverThreadIds": [],
+            "senderThreadId": "thread-1",
+            "status": "inProgress",
+            "tool": "spawnAgent",
+            "type": "collabAgentToolCall",
+        }
+        for receivers in ([], ["child-1", "child-2"]):
+            protocol = _protocol(QueueTransport([]))
+            protocol._thread_id = "thread-1"
+            protocol._validate_item(initial)
+            with self.subTest(receivers=receivers):
+                with self.assertRaisesRegex(ProviderError, "exactly one receiver"):
+                    protocol._validate_item(
+                        {
+                            **initial,
+                            "receiverThreadIds": receivers,
+                            "status": "completed",
+                        }
+                    )
+                self.assertEqual(
+                    protocol._pending_spawn_items, {("thread-1", "item-1"): None}
+                )
+                self.assertEqual(protocol._collab_thread_ids, set())
+
     def test_spawn_agent_bounds_total_child_thread_scope(self) -> None:
         protocol = _protocol(QueueTransport([]))
         protocol._thread_id = "thread-1"

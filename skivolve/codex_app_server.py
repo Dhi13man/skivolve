@@ -1966,6 +1966,10 @@ class _AppServerProtocol:
                 ):
                     raise ProviderError("collaboration agent message exceeds the limit")
         if tool == "spawnAgent":
+            if status == "completed" and len(receivers) != 1:
+                raise ProviderError(
+                    "completed spawnAgent must have exactly one receiver"
+                )
             pending_key = (sender, item_id)
             pending = pending_key in self._pending_spawn_items
             expected_receiver = self._pending_spawn_items.get(pending_key)

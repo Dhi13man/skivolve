@@ -1,0 +1,1 @@
+South/importer still reads legacy `accountId` and `createdAt`; no migration owner or date is recorded.

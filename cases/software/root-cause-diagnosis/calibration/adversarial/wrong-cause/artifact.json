@@ -1,0 +1,10 @@
+{
+  "verdict": "failed",
+  "root_cause": "A stale cache caused the failure.",
+  "evidence": [
+    "failure.log:2",
+    "worker.py:2-3"
+  ],
+  "verification": "Executed outcome(0) and observed ok; Python compilation passed.",
+  "unverified": "No broader behavior specification or test suite was supplied."
+}

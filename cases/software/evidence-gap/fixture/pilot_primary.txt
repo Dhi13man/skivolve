@@ -1,0 +1,1 @@
+Quartz prototype Q-17 reduced median latency by 18% on a 50-request synthetic sample. Tail latency was not measured.

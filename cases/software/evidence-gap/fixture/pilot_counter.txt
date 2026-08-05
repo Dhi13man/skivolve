@@ -1,0 +1,1 @@
+An earlier Quartz build increased p99 latency by 9% on a bursty workload. The note does not establish whether that build matches release candidate Q-17.

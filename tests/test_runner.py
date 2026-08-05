@@ -3038,6 +3038,7 @@ except OSError:
 passed = (
     content == b'{"a":1,"b":2}'
     and os.environ["EVAL_ARTIFACT_KIND"] == "final_output_json"
+    and os.environ["EVAL_AGENT_WORKSPACE_MUTATED"] == "1"
     and os.environ["EVAL_ARTIFACT_SHA256"] == hashlib.sha256(content).hexdigest()
     and (workspace / "input.txt").read_text(encoding="utf-8") == "original\\n"
     and not (workspace / "poison.txt").exists()
@@ -3085,6 +3086,7 @@ print(json.dumps({
             )
             self.assertTrue(arm["verifier"]["artifact"]["read_only"])
             self.assertTrue(arm["verifier"]["sandbox"]["workspace_read_only"])
+            self.assertTrue(arm["verifier"]["sandbox"]["agent_workspace_mutated"])
             self.assertFalse(arm["verifier"]["workspace_mutated"])
 
     def test_preflight_when_final_output_is_judged_requires_calibrated_profile(
@@ -3381,6 +3383,7 @@ environment_minimal = (
         "EVAL_ARTIFACT_PATH",
         "EVAL_ARTIFACT_KIND",
         "EVAL_ARTIFACT_SHA256",
+        "EVAL_AGENT_WORKSPACE_MUTATED",
         "EVAL_CASE_ROOT",
         "EVAL_TOOL_BIN",
         "EVAL_RESULT_ROOT",
@@ -8051,9 +8054,9 @@ class CheckedInSuiteTests(unittest.TestCase):
     def test_manifest_is_loadable_and_public_cases_are_not_holdouts(self) -> None:
         suite = load_suite(HARNESS_ROOT / "suite.json")
         splits = [case.split for case in suite.cases]
-        self.assertEqual(len(suite.cases), 17)
+        self.assertEqual(len(suite.cases), 21)
         self.assertEqual(splits.count("train"), 10)
-        self.assertEqual(splits.count("validation"), 7)
+        self.assertEqual(splits.count("validation"), 11)
         self.assertNotIn("holdout", splits)
 
     def test_models_and_frozen_original_are_pinned(self) -> None:

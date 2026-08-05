@@ -1,0 +1,10 @@
+{
+  "schema_version": 1,
+  "must_pass": [],
+  "must_fail": [
+    "pointed-public-choice",
+    "safe-default-recommendation",
+    "consumer-conflict-grounding",
+    "ask-and-stop-restraint"
+  ]
+}

@@ -257,7 +257,7 @@ class ScriptedTransport:
         not_loaded_has_items: bool = False,
         error_will_retry: bool | None = None,
         skill_disable_succeeds: bool = True,
-        thread_cli_version: str = "0.144.3",
+        thread_cli_version: str = "0.146.0",
         turn_error: dict[str, Any] | None = None,
         turn_items_view: str | None = "notLoaded",
     ) -> None:
@@ -630,7 +630,7 @@ def _protocol(
         workspace=Path("/runtime/work"),
         system_context="isolated evaluation",
         locked_efforts=("low", "medium", "high", "xhigh", "max"),
-        locked_thread_cli_version="0.144.3",
+        locked_thread_cli_version="0.146.0",
         expected_codex_home=Path("/runtime/codex-home"),
         on_dispatched=on_dispatched,
     )
@@ -661,7 +661,7 @@ class CodexProtocolTests(unittest.TestCase):
             workspace=Path("/runtime/work"),
             system_context="isolated evaluation",
             locked_efforts=("low", "medium", "high", "xhigh", "max"),
-            locked_thread_cli_version="0.144.3",
+            locked_thread_cli_version="0.146.0",
             expected_codex_home=Path("/runtime/codex-home"),
         ).run("implement request", time.monotonic() + 5)
 
@@ -719,7 +719,7 @@ class CodexProtocolTests(unittest.TestCase):
                 workspace=Path("/runtime/work"),
                 system_context="test",
                 locked_efforts=("low", "medium", "high", "xhigh", "max"),
-                locked_thread_cli_version="0.144.3",
+                locked_thread_cli_version="0.146.0",
                 expected_codex_home=Path("/runtime/codex-home"),
             ).run("request", time.monotonic() + 5)
 
@@ -801,7 +801,7 @@ class CodexProtocolTests(unittest.TestCase):
                 workspace=Path("/runtime/work"),
                 system_context="test",
                 locked_efforts=("low", "medium", "high", "xhigh", "max"),
-                locked_thread_cli_version="0.144.3",
+                locked_thread_cli_version="0.146.0",
                 expected_codex_home=Path("/runtime/codex-home"),
             ).run("request", time.monotonic() + 5)
 
@@ -965,7 +965,7 @@ class CodexProtocolTests(unittest.TestCase):
                 workspace=Path("/runtime/work"),
                 system_context="test",
                 locked_efforts=("low", "medium", "high", "xhigh", "max"),
-                locked_thread_cli_version="0.144.3",
+                locked_thread_cli_version="0.146.0",
                 expected_codex_home=Path("/runtime/codex-home"),
             ).run("request", time.monotonic() + 5)
 
@@ -2906,7 +2906,7 @@ class CodexProviderTests(unittest.TestCase):
 
         self.assertEqual(
             provider.protocol_provenance["schema_sha256"],
-            "f5e8d20f3a8f9bb5e5b23ab0c5aa6bde7b12e7e0713606c5d0132651a4959d37",
+            "e554a74bd59d38d16acb1744750b2999156ee3d65d0fe906b22ab52edf17fbbc",
         )
         self.assertEqual(provider.execution_policy.concurrency, "serialized")
         self.assertFalse(provider.execution_policy.release_authoritative)
@@ -3634,13 +3634,13 @@ class CodexLockTests(unittest.TestCase):
         executable = _require_real_codex(self)
         lock = _load_protocol_lock(LOCK_PATH)
         validate_codex_protocol_lock(executable, lock)
-        self.assertEqual(lock.cli_version, "codex-cli 0.144.3")
-        self.assertEqual(lock.thread_cli_version, "0.144.3")
+        self.assertEqual(lock.cli_version, "codex-cli 0.146.0")
+        self.assertEqual(lock.thread_cli_version, "0.146.0")
         self.assertEqual(
             lock.protocol_sha256,
-            "f5e8d20f3a8f9bb5e5b23ab0c5aa6bde7b12e7e0713606c5d0132651a4959d37",
+            "e554a74bd59d38d16acb1744750b2999156ee3d65d0fe906b22ab52edf17fbbc",
         )
-        self.assertEqual(lock.protocol_canonical_bytes, 308970)
+        self.assertEqual(lock.protocol_canonical_bytes, 331046)
         self.assertEqual(
             hashlib.sha256(LOCK_PATH.read_bytes()).hexdigest(), lock.sha256
         )

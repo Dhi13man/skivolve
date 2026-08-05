@@ -4,6 +4,10 @@ All notable changes to Skivolve are documented in this file. The format follows 
 
 ## [Unreleased]
 
+### Changed
+
+- Refreshed the Codex app-server runtime lock from 0.144.3 to 0.146.0, including the executable, bundled tools, and generated protocol schema.
+
 ### Fixed
 
 - Accepted bounded Codex collaboration lifecycles without letting child-agent traffic mutate the main result, and cleaned unreadable evaluator runtime directories without following symlinks.

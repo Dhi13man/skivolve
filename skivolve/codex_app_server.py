@@ -2014,8 +2014,17 @@ class _AppServerProtocol:
             if self._turn_completed is not None:
                 raise ProviderError("Codex completed the same turn more than once")
             self._validate_completed_turn(turn, completed_thread_id)
-            if any(self._collab_turn_ids.values()):
-                raise ProviderError("Codex completed root turn with active child turns")
+            children_with_turns = {
+                thread_id for thread_id, _turn_id in self._seen_collab_turn_ids
+            }
+            if (
+                self._pending_spawn_items
+                or any(self._collab_turn_ids.values())
+                or not self._validated_collab_thread_ids <= children_with_turns
+            ):
+                raise ProviderError(
+                    "Codex completed root turn with outstanding child work"
+                )
             self._turn_completed = turn
             return
         if method in _IGNORED_NOTIFICATIONS:

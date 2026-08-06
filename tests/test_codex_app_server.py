@@ -980,27 +980,42 @@ class CodexProtocolTests(unittest.TestCase):
 
         self.assertEqual(protocol._collab_turn_ids["child-1"], {"child-turn"})
 
-    def test_root_completion_with_active_child_is_rejected(self) -> None:
+    def test_root_completion_requires_terminal_child_work(self) -> None:
+        completed = {
+            "threadId": "main-thread",
+            "turn": {
+                "id": "main-turn",
+                "items": [],
+                "itemsView": "notLoaded",
+                "status": "completed",
+            },
+        }
+        for state in ("pending-spawn", "awaiting-turn", "active-turn"):
+            protocol = _protocol(QueueTransport([]))
+            protocol._thread_id = "main-thread"
+            protocol._turn_id = "main-turn"
+            if state == "pending-spawn":
+                protocol._pending_spawn_items[("main-thread", "spawn-1")] = None
+            elif state == "awaiting-turn":
+                protocol._validated_collab_thread_ids.add("child-1")
+            else:
+                protocol._collab_turn_ids["child-1"] = {"child-turn"}
+
+            with (
+                self.subTest(state=state),
+                self.assertRaisesRegex(ProviderError, "outstanding child work"),
+            ):
+                protocol._handle_notification("turn/completed", completed)
+            self.assertIsNone(protocol._turn_completed)
+
         protocol = _protocol(QueueTransport([]))
         protocol._thread_id = "main-thread"
         protocol._turn_id = "main-turn"
-        protocol._collab_turn_ids["child-1"] = {"child-turn"}
+        protocol._validated_collab_thread_ids.add("child-1")
+        protocol._seen_collab_turn_ids.add(("child-1", "child-turn"))
+        protocol._handle_notification("turn/completed", completed)
 
-        with self.assertRaisesRegex(ProviderError, "root turn with active child turns"):
-            protocol._handle_notification(
-                "turn/completed",
-                {
-                    "threadId": "main-thread",
-                    "turn": {
-                        "id": "main-turn",
-                        "items": [],
-                        "itemsView": "notLoaded",
-                        "status": "completed",
-                    },
-                },
-            )
-
-        self.assertIsNone(protocol._turn_completed)
+        self.assertIsNotNone(protocol._turn_completed)
 
     def test_missing_usage_rejects_completed_turn(self) -> None:
         transport = ScriptedTransport(Path("/runtime/work"), omit_usage=True)

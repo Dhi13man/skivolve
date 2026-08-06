@@ -25,6 +25,18 @@ def main() -> None:
     cause = flatten_text(values.get("root_cause", "")).lower()
     evidence = values.get("evidence")
     evidence_text = flatten_text(evidence).lower()
+    evidence_items = (
+        [
+            flatten_text(item)
+            .lower()
+            .replace("`", "")
+            .replace('"', "")
+            .replace("'", "")
+            for item in evidence
+        ]
+        if isinstance(evidence, list)
+        else []
+    )
     verification = flatten_text(values.get("verification", "")).lower()
     unverified = flatten_text(values.get("unverified", "")).lower()
     diagnosis = f"{verdict} {cause} {evidence_text}"
@@ -67,11 +79,52 @@ def main() -> None:
         and zero_observed_ok
     )
     bounded_evidence = isinstance(evidence, list) and 2 <= len(evidence) <= 3
-    line_evidence = (
-        bounded_evidence
-        and "failure.log:2" in evidence_text
-        and "worker.py:2" in evidence_text
+    evidence_denials = (
+        "irrelevant",
+        "does not",
+        "not contain",
+        "unrelated",
+        "incorrect",
     )
+    failure_evidence = any(
+        "failure.log:2" in item
+        and not any(denial in item for denial in evidence_denials)
+        and (
+            item.strip(". ") == "failure.log:2"
+            or (
+                any(
+                    expected in item
+                    for expected in (
+                        "expected retry",
+                        "expected=retry",
+                        "expects retry",
+                    )
+                )
+                and any(
+                    observed in item
+                    for observed in ("observed ok", "observed=ok", "observes ok")
+                )
+                and ("attempts=0" in item or "zero" in item)
+            )
+        )
+        for item in evidence_items
+    )
+    worker_evidence = any(
+        "worker.py:2" in item
+        and not any(denial in item for denial in evidence_denials)
+        and (
+            item.strip(". ") == "worker.py:2-3"
+            or (
+                "ok" in item
+                and any(
+                    boundary in item
+                    for boundary in ("nonnegative", ">= 0", ">=0", "including 0")
+                )
+            )
+        )
+        for item in evidence_items
+    )
+    line_evidence = bounded_evidence and failure_evidence and worker_evidence
     checked = (
         verification.startswith(
             (

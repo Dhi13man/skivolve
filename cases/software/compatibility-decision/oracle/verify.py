@@ -136,8 +136,28 @@ def main() -> None:
     )
     no_action = (
         bool(actions)
-        and any(word in actions for word in ("no ", "not ", "unchanged"))
-        and any(word in actions for word in ("action", "change", "edit", "workspace"))
+        and any(
+            phrase in actions
+            for phrase in (
+                "no files were edited",
+                "no workspace changes",
+                "no workspace or serialization changes",
+                "no action taken",
+                "no action was taken",
+                "workspace unchanged",
+                "workspace is unchanged",
+                "workspace was not edited",
+            )
+        )
+        and not any(
+            reversal in actions
+            for reversal in (
+                "action taken:",
+                "edits completed",
+                "changes completed",
+                "not deferred",
+            )
+        )
     )
     restrained = (
         artifact is not None

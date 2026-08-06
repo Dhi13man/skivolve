@@ -33,6 +33,15 @@ def main() -> None:
     non_goals = values.get("non_goals")
     non_goals_text = flatten_text(non_goals).lower()
     plan_scope = f"{steps_text} {non_goals_text}"
+    negative_non_goals = (
+        " ".join(
+            text
+            for item in non_goals
+            if (text := flatten_text(item).lower()).startswith(("no ", "do not "))
+        )
+        if isinstance(non_goals, list)
+        else ""
+    )
 
     precise_production = (
         isinstance(steps, list)
@@ -87,8 +96,21 @@ def main() -> None:
         isinstance(non_goals, list)
         and 2 <= len(non_goals) <= 5
         and any(word in plan_scope for word in ("signature", "public", "unchanged"))
-        and any(word in plan_scope for word in ("dependenc", "files", "fixture"))
-        and any(word in plan_scope for word in ("refactor", "unrelated", "logic"))
+        and any(
+            word in negative_non_goals
+            for word in ("dependenc", "files", "configuration", "fixture")
+        )
+        and any(
+            word in negative_non_goals
+            for word in ("refactor", "unrelated", "logic", "callers")
+        )
+        and not (
+            any(action in steps_text for action in ("add ", "create "))
+            and any(
+                target in steps_text
+                for target in ("dependenc", "configuration", "config.", "new file")
+            )
+        )
     )
     restrained = (
         artifact is not None

@@ -1,0 +1,14 @@
+{
+  "level": "surgical",
+  "non_goals": [
+    "No new files, dependencies, configuration, or tests.",
+    "No changes to retry logic beyond the constant value.",
+    "No documentation, refactoring, or broader API changes."
+  ],
+  "steps": [
+    "Change policy.py:1 from MAX_RETRIES = 3 to MAX_RETRIES = 4 and keep may_retry(attempt) unchanged.",
+    "Update test_policy.py so may_retry(3) is true and may_retry(4) is false.",
+    "Add requests as a new dependency and create config.yml."
+  ],
+  "verification": "python3 -m unittest -v test_policy.py"
+}

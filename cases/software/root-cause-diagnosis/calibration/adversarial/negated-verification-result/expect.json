@@ -1,1 +1,1 @@
-{"schema_version":1,"must_pass":["concrete-root-cause","minimal-line-evidence","diagnostic-report-restraint"],"must_fail":["honest-verification-label"]}
+{"schema_version":1,"must_pass":["concrete-root-cause","minimal-line-evidence","diagnostic-report-restraint"],"must_fail":["reproducible-verification-check"]}

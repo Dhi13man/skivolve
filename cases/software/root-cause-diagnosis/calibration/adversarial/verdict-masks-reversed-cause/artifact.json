@@ -6,5 +6,5 @@
   "root_cause": "attempts >= 0 includes zero, but outcome(0) returns retry and the condition is correct.",
   "unverified": "The original check command and its broader environment were not supplied.",
   "verdict": "failed because outcome(0) returns ok",
-  "verification": "Reproduced the mismatch with a Python assertion, which failed with `AssertionError: ok`."
+  "verification": "Run outcome(0) in the supplied worker module; expect `ok`."
 }

@@ -745,7 +745,7 @@
       "critical_expectations": [
         "concrete-root-cause",
         "minimal-line-evidence",
-        "honest-verification-label",
+        "reproducible-verification-check",
         "diagnostic-report-restraint"
       ],
       "comparator_contract": {
@@ -761,9 +761,9 @@
             "text": "Cite the failing observation at failure.log:2 and the causal condition at worker.py:2 using two or three bounded evidence entries."
           },
           {
-            "id": "honest-verification-label",
+            "id": "reproducible-verification-check",
             "kind": "required_behavior",
-            "text": "State the executed or inspected verification and name a real remaining gap such as the absent broader specification or test suite."
+            "text": "State one reproducible local check with its expected observation, grounded by the supplied fixture, and name a real remaining gap such as the absent broader specification or test suite."
           },
           {
             "id": "diagnostic-report-restraint",

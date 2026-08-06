@@ -91,24 +91,45 @@ def main() -> None:
     artifact = read_artifact()
     values = artifact or {}
     steps = values.get("steps")
-    steps_text = flatten_text(steps).lower().replace("`", "")
-    step_texts = (
-        [flatten_text(step).lower().replace("`", "") for step in steps]
+    string_steps = (
+        steps
         if isinstance(steps, list)
-        else []
+        and 2 <= len(steps) <= 3
+        and all(isinstance(step, str) for step in steps)
+        else None
     )
+    object_steps = (
+        steps
+        if isinstance(steps, list)
+        and 2 <= len(steps) <= 3
+        and all(
+            isinstance(step, dict)
+            and set(step) == {"file", "edit"}
+            and all(isinstance(step.get(field), str) for field in ("file", "edit"))
+            for step in steps
+        )
+        else None
+    )
+    if string_steps is not None:
+        step_texts = [step.lower().replace("`", "") for step in string_steps]
+    elif object_steps is not None:
+        step_texts = [
+            f"{step['edit']} {step['file']}".lower().replace("`", "")
+            for step in object_steps
+        ]
+    else:
+        step_texts = []
+    steps_text = " ".join(step_texts)
     verification_value = values.get("verification", "")
     if isinstance(verification_value, dict):
         command_value = verification_value.get("command", "")
     elif isinstance(verification_value, list) and verification_value:
         command_value = verification_value[0]
     else:
-        command_value = verification_value
+        command_value = ""
     command = flatten_text(command_value).lower().replace("`", "")
     native_command = bool(re.fullmatch(COMMAND_PATTERN, command))
-    if isinstance(verification_value, str):
-        verification_schema = True
-    elif isinstance(verification_value, list):
+    if isinstance(verification_value, list):
         verification_items = [
             flatten_text(item).lower().replace("`", "") for item in verification_value
         ]
@@ -155,6 +176,19 @@ def main() -> None:
         verification_schema = False
     non_goals = values.get("non_goals")
     non_goals_text = flatten_text(non_goals).lower()
+    non_goals_schema = (
+        isinstance(non_goals, list)
+        and 2 <= len(non_goals) <= 5
+        and all(isinstance(item, str) for item in non_goals)
+    )
+    exact_schema = (
+        artifact is not None
+        and set(artifact) == EXPECTED_KEYS
+        and isinstance(artifact.get("level"), str)
+        and (string_steps is not None or object_steps is not None)
+        and verification_schema
+        and non_goals_schema
+    )
     plan_scope = f"{steps_text} {non_goals_text}"
     may_retry_preserved = all(
         "may_retry" not in step
@@ -184,8 +218,7 @@ def main() -> None:
     )
 
     precise_production = (
-        isinstance(steps, list)
-        and 2 <= len(steps) <= 3
+        bool(step_texts)
         and len(production_steps) == 1
         and any(
             re.fullmatch(pattern, production_steps[0])
@@ -199,8 +232,7 @@ def main() -> None:
         re.fullmatch(pattern, test_steps[0]) for pattern in TEST_STEP_PATTERNS
     )
     bounded_non_goals = (
-        isinstance(non_goals, list)
-        and 2 <= len(non_goals) <= 5
+        non_goals_schema
         and all(
             isinstance(item, str) and item.lower() in NON_GOAL_STATEMENTS
             for item in non_goals
@@ -223,11 +255,9 @@ def main() -> None:
         )
     )
     restrained = (
-        artifact is not None
-        and set(artifact) == EXPECTED_KEYS
+        exact_schema
         and flatten_text(values.get("level", "")).lower() == "surgical"
         and bounded_non_goals
-        and verification_schema
         and agent_workspace_unchanged()
     )
 

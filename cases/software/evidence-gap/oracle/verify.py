@@ -197,6 +197,7 @@ def main() -> None:
     restrained = (
         artifact is not None
         and set(artifact) == EXPECTED_KEYS
+        and isinstance(values.get("decision"), str)
         and re.fullmatch(DECISION_PATTERN, decision.rstrip(". ")) is not None
         and sources <= ALLOWED_SOURCES
         and next_check_schema

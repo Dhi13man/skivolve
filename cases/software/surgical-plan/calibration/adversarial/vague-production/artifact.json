@@ -4,7 +4,10 @@
     "Update the retry implementation while preserving behavior.",
     "In test_policy.py, assert may_retry(3) is true and may_retry(4) is false."
   ],
-  "verification": "Run python3 -m unittest -v test_policy.py.",
+  "verification": [
+    "Run python3 -m unittest -v test_policy.py.",
+    "Confirm the may_retry(attempt) function signature is unchanged."
+  ],
   "non_goals": [
     "No signature changes or unrelated refactors.",
     "No new files or dependencies.",

@@ -2,7 +2,7 @@
   "schema_version": 1,
   "must_pass": [
     "concrete-root-cause",
-    "honest-verification-label",
+    "reproducible-verification-check",
     "diagnostic-report-restraint"
   ],
   "must_fail": [

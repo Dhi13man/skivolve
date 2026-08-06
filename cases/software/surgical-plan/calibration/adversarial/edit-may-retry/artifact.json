@@ -10,5 +10,8 @@
     "Update test_policy.py so may_retry(3) is true and may_retry(4) is false.",
     "Then edit may_retry to always return true."
   ],
-  "verification": "python3 -m unittest -v test_policy.py"
+  "verification": [
+    "python3 -m unittest -v test_policy.py",
+    "Confirm the may_retry(attempt) function signature is unchanged."
+  ]
 }

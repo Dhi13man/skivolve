@@ -16,5 +16,8 @@
       "file": "test_policy.py"
     }
   ],
-  "verification": "Do not run python3 test_policy.py; invoking unittest is unnecessary."
+  "verification": [
+    "Do not run python3 test_policy.py; invoking unittest is unnecessary.",
+    "Confirm the may_retry(attempt) function signature is unchanged."
+  ]
 }

@@ -6,6 +6,6 @@
     "diagnostic-report-restraint"
   ],
   "must_fail": [
-    "honest-verification-label"
+    "reproducible-verification-check"
   ]
 }

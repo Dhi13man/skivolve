@@ -5,7 +5,7 @@
     "failure.log:2",
     "worker.py:2-3"
   ],
-  "verification": "Executed outcome(0) and observed ok; Python compilation passed.",
+  "verification": "Run outcome(0) in the supplied worker module; expect `ok`.",
   "unverified": "No broader behavior specification or test suite was supplied.",
   "remediation": "Rewrite the retry system."
 }

@@ -4,7 +4,7 @@
   "must_fail": [
     "concrete-root-cause",
     "minimal-line-evidence",
-    "honest-verification-label",
+    "reproducible-verification-check",
     "diagnostic-report-restraint"
   ]
 }

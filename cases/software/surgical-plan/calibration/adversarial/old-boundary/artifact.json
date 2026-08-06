@@ -4,7 +4,10 @@
     "In policy.py, change MAX_RETRIES from 3 to 4 and keep may_retry unchanged.",
     "In test_policy.py, keep may_retry(2) true and may_retry(3) false."
   ],
-  "verification": "Run python3 -m unittest -v test_policy.py.",
+  "verification": [
+    "Run python3 -m unittest -v test_policy.py.",
+    "Confirm the may_retry(attempt) function signature is unchanged."
+  ],
   "non_goals": [
     "No signature changes or unrelated refactors.",
     "No new files or dependencies.",

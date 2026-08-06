@@ -44,6 +44,21 @@ TEST_STEP_PATTERNS = (
     r"update the focused boundary test so attempts 2 and 3 are accepted, while attempt "
     r"4 is rejected\. test_policy\.py",
 )
+VERIFICATION_CONFIRMATIONS = {
+    "confirm the may_retry(attempt) function signature is unchanged.",
+    "confirm the function signature remains may_retry(attempt).",
+}
+VERIFICATION_EXPECTATIONS = {
+    "focused boundary test passes.",
+    "test_boundary passes.",
+    "the focused unittest passes with the updated boundary assertions.",
+}
+VERIFICATION_BASELINE = "the native command currently passes before the planned edits."
+VERIFICATION_CHECKS = (
+    "the boundary test passes.",
+    "the function signature is unchanged.",
+    "retry attempts below 4 remain accepted, while attempt 4 is rejected.",
+)
 
 
 def main() -> None:
@@ -64,6 +79,54 @@ def main() -> None:
     else:
         command_value = verification_value
     command = flatten_text(command_value).lower().replace("`", "")
+    native_command = bool(re.fullmatch(COMMAND_PATTERN, command))
+    if isinstance(verification_value, str):
+        verification_schema = True
+    elif isinstance(verification_value, list):
+        verification_items = [
+            flatten_text(item).lower().replace("`", "") for item in verification_value
+        ]
+        verification_schema = (
+            len(verification_items) == 2
+            and all(isinstance(item, str) for item in verification_value)
+            and verification_items[1] in VERIFICATION_CONFIRMATIONS
+        )
+    elif isinstance(verification_value, dict):
+        verification_keys = set(verification_value)
+        expected = flatten_text(verification_value.get("expected", "")).lower()
+        baseline = flatten_text(verification_value.get("baseline", "")).lower()
+        checks = verification_value.get("checks")
+        verification_schema = isinstance(verification_value.get("command"), str) and (
+            (
+                verification_keys
+                in (
+                    {"command", "expected"},
+                    {"command", "expected", "status"},
+                )
+                and isinstance(verification_value.get("expected"), str)
+                and expected in VERIFICATION_EXPECTATIONS
+                and (
+                    "status" not in verification_value
+                    or verification_value["status"] == "not_run_plan_only"
+                )
+            )
+            or (
+                verification_keys == {"baseline", "command", "expected"}
+                and isinstance(verification_value.get("baseline"), str)
+                and isinstance(verification_value.get("expected"), str)
+                and baseline == VERIFICATION_BASELINE
+                and expected in VERIFICATION_EXPECTATIONS
+            )
+            or (
+                verification_keys == {"checks", "command"}
+                and isinstance(checks, list)
+                and all(isinstance(item, str) for item in checks)
+                and tuple(flatten_text(item).lower() for item in checks)
+                == VERIFICATION_CHECKS
+            )
+        )
+    else:
+        verification_schema = False
     non_goals = values.get("non_goals")
     non_goals_text = flatten_text(non_goals).lower()
     plan_scope = f"{steps_text} {non_goals_text}"
@@ -111,7 +174,6 @@ def main() -> None:
     focused_test = len(test_steps) == 1 and any(
         re.fullmatch(pattern, test_steps[0]) for pattern in TEST_STEP_PATTERNS
     )
-    native_command = bool(re.fullmatch(COMMAND_PATTERN, command))
     bounded_non_goals = (
         isinstance(non_goals, list)
         and 2 <= len(non_goals) <= 5
@@ -137,6 +199,7 @@ def main() -> None:
         and set(artifact) == EXPECTED_KEYS
         and flatten_text(values.get("level", "")).lower() == "surgical"
         and bounded_non_goals
+        and verification_schema
         and agent_workspace_unchanged()
     )
 

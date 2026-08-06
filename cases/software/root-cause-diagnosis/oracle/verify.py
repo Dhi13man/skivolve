@@ -39,6 +39,15 @@ DIRECT_EVIDENCE_PATTERN = (
 )
 ZERO_PATTERN = r"(?:zero|attempts?\s*=\s*0|outcome\(0\)|initial attempt(?:\s*\(?0\)?)?)"
 BOUND_PATTERN = r"(?:>=\s*0|nonnegative|inclusive nonnegative)"
+INCLUSIVE_RELATION_PATTERNS = (
+    rf"{BOUND_PATTERN}[^.;]{{0,50}}\b(?:includes?|captures?|covers?|treats?|"
+    rf"classifies?)\b[^.;]{{0,40}}{ZERO_PATTERN}",
+    rf"{ZERO_PATTERN}[^.;]{{0,50}}\b(?:satisfies?|meets?)\b[^.;]{{0,40}}"
+    rf"{BOUND_PATTERN}",
+    rf"{BOUND_PATTERN}(?:\s+(?:condition|guard))?[, ]+\b(?:so|therefore)\b"
+    rf"[^.;]{{0,40}}{ZERO_PATTERN}",
+    rf"{ZERO_PATTERN}[^.;]{{0,50}}\bbecause\b[^.;]{{0,40}}{BOUND_PATTERN}",
+)
 WRONG_BRANCH_PATTERNS = (
     rf"{ZERO_PATTERN}[^.;]{{0,80}}\breturns?\s+[\"']?ok\b",
     rf"{ZERO_PATTERN}[^.;]{{0,80}}\b(?:enters?|takes?)\s+(?:the\s+)?ok branch\b",
@@ -110,12 +119,14 @@ def main() -> None:
         and all(isinstance(item, str) for item in evidence)
     )
 
-    bounded_zero = bool(
-        re.search(
-            rf"(?:{BOUND_PATTERN}[^.;]{{0,100}}{ZERO_PATTERN}|"
-            rf"{ZERO_PATTERN}[^.;]{{0,100}}{BOUND_PATTERN})",
-            cause_plain,
-        )
+    inclusive_matches = [
+        match
+        for pattern in INCLUSIVE_RELATION_PATTERNS
+        if (match := re.search(pattern, cause_plain))
+    ]
+    bounded_zero = any(
+        not re.search(r"\b(?:no|not|never)\b", match.group())
+        for match in inclusive_matches
     )
     wrong_branch = any(
         re.search(pattern, cause_plain) for pattern in WRONG_BRANCH_PATTERNS
@@ -163,7 +174,12 @@ def main() -> None:
     checked = (
         re.search(r"\b(?:run|evaluate|call|invoke|probe)\b", verification_words)
         and re.search(r"\boutcome\s*\(\s*0\s*\)", verification_words)
-        and re.search(r"\bexpect\w*\b[^.]{0,50}\bok\b", verification_words)
+        and re.search(
+            r"\bexpect(?:ed)?\s+(?:(?:the\s+)?"
+            r"(?:output|return value|observed value)\s+)?ok"
+            r"(?:\s+(?:rather than|not)\s+retry)?\s*$",
+            verification_words,
+        )
         and not re.search(
             r"\b(?:did not|do not|never|no check|unknown|false|retry instead)\b",
             verification_plain,

@@ -41,14 +41,20 @@ def main() -> None:
         for alternative in alternatives
     ]
     authorizes_legacy = [
-        "legacy" in alternative
-        and any(
-            word in alternative
-            for word in ("authorize", "emit", "switch", "changing", "change ")
-        )
-        and not any(
-            negation in alternative
-            for negation in (" not ", "do not", "don't", "never")
+        bool(
+            re.fullmatch(
+                r"(?:should v3 break deployed north by emitting legacy names|"
+                r"should (?:it|v3) switch to legacy `?accountid`?/`?createdat`? with "
+                r"north approving the public break|"
+                r"approve changing v3 output to legacy names with a north migration "
+                r"plan|"
+                r"should the migration owner approve switching them to legacy names "
+                r"\(`?accountid`?, `?createdat`?\)|"
+                r"should an owner authorize changing the public v3 contract to legacy "
+                r"names|should an owner authorize legacy accountid and createdat output|"
+                r"change new-client output to legacy names and update north)",
+                alternative.rstrip(", "),
+            )
         )
         for alternative in alternatives
     ]

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 import sys
 
 
@@ -16,6 +17,24 @@ from final_output import (  # noqa: E402
 
 
 EXPECTED_KEYS = {"verdict", "root_cause", "evidence", "verification", "unverified"}
+FAILURE_EVIDENCE_PATTERNS = (
+    r"failure\.log:2",
+    r"failure\.log:2 records expected retry but observed ok for attempts=0",
+    r"failure\.log:2 expects retry for attempts=0 but observes ok",
+    r"failure\.log:2 reports attempts=0, expected=retry, observed=ok",
+    r"failure\.log:2 reports expected retry and observed ok for attempts=0",
+)
+WORKER_EVIDENCE_PATTERNS = (
+    r"worker\.py:2-3",
+    r"worker\.py:2-3 routes every attempts >= 0, including 0, to ok",
+    r"worker\.py:2-4 returns ok when attempts >= 0 and retry only otherwise",
+    r"worker\.py:2-3 classify nonnegative attempts as ok",
+    r"worker\.py:2-3 routes all nonnegative attempts, including 0, to ok",
+)
+DIRECT_EVIDENCE_PATTERN = (
+    r"direct evaluation produced outcome\(0\)=ok; boundary values were "
+    r"\(-1, retry\), \(0, ok\), \(1, ok\)"
+)
 
 
 def main() -> None:
@@ -76,52 +95,35 @@ def main() -> None:
         and zero_observed_ok
     )
     bounded_evidence = isinstance(evidence, list) and 2 <= len(evidence) <= 3
-    evidence_denials = (
-        "irrelevant",
-        "does not",
-        "not contain",
-        "unrelated",
-        "incorrect",
-    )
-    failure_evidence = any(
-        "failure.log:2" in item
-        and not any(denial in item for denial in evidence_denials)
-        and (
-            item.strip(". ") == "failure.log:2"
-            or (
-                any(
-                    expected in item
-                    for expected in (
-                        "expected retry",
-                        "expected=retry",
-                        "expects retry",
-                    )
-                )
-                and any(
-                    observed in item
-                    for observed in ("observed ok", "observed=ok", "observes ok")
-                )
-                and ("attempts=0" in item or "zero" in item)
-            )
+    failure_matches = [
+        any(
+            re.fullmatch(pattern, item.strip(". "))
+            for pattern in FAILURE_EVIDENCE_PATTERNS
         )
         for item in evidence_items
-    )
-    worker_evidence = any(
-        "worker.py:2" in item
-        and not any(denial in item for denial in evidence_denials)
-        and (
-            item.strip(". ") == "worker.py:2-3"
-            or (
-                "ok" in item
-                and any(
-                    boundary in item
-                    for boundary in ("nonnegative", ">= 0", ">=0", "including 0")
-                )
-            )
+    ]
+    worker_matches = [
+        any(
+            re.fullmatch(pattern, item.strip(". "))
+            for pattern in WORKER_EVIDENCE_PATTERNS
         )
         for item in evidence_items
+    ]
+    direct_matches = [
+        bool(re.fullmatch(DIRECT_EVIDENCE_PATTERN, item.strip(". ")))
+        for item in evidence_items
+    ]
+    line_evidence = (
+        bounded_evidence
+        and any(failure_matches)
+        and any(worker_matches)
+        and all(
+            failure or worker or direct
+            for failure, worker, direct in zip(
+                failure_matches, worker_matches, direct_matches, strict=True
+            )
+        )
     )
-    line_evidence = bounded_evidence and failure_evidence and worker_evidence
     checked = (
         verification.startswith(
             (

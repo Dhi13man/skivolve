@@ -39,6 +39,20 @@ SOURCE_CLAIM_PATTERNS = {
         r"the evidence does not establish whether that earlier build matches q-17",
     ),
 }
+UNKNOWN_CLAIM_PATTERNS = (
+    r"(?:it is unknown )?whether (?:prototype )?q-17 (?:is|matches) the exact "
+    r"release candidate(?: is unknown)?",
+    r"(?:q-17(?:'s)?|the release candidate's) p99(?: latency)? under "
+    r"(?:the |a )?(?:required )?production-shaped workload(?: is unknown)?",
+    r"whether the earlier build's (?:9% )?p99 (?:regression|increase) applies to "
+    r"(?:q-17(?: or the release candidate)?|the release candidate)",
+    r"whether the earlier build matches q-17",
+    r"no acceptable p99 threshold or required improvement relative to the current "
+    r"engine is specified",
+    r"the acceptable p99 result or comparison threshold is unspecified",
+    r"the pass threshold or required comparison against the current engine",
+    r"no p99 acceptance threshold beyond requiring its measurement is supplied",
+)
 
 
 def main() -> None:
@@ -111,38 +125,13 @@ def main() -> None:
             )
             and ("source" not in item or item["source"] in ALLOWED_SOURCES)
             and any(
-                subject in flatten_text(item).lower()
-                for subject in (
-                    "q-17",
-                    "release candidate",
-                    "p99",
-                    "earlier build",
-                    "threshold",
-                    "comparison",
+                re.fullmatch(
+                    pattern,
+                    flatten_text(item.get("claim", item.get("unknown", "")))
+                    .lower()
+                    .rstrip(". "),
                 )
-            )
-            and not re.search(
-                r"\b(?:replac|adopt|switch|migrat|deploy|authoriz|approv|"
-                r"recommend|proceed)\w*\b",
-                flatten_text(item).lower(),
-            )
-            and not any(
-                resolved in flatten_text(item).lower()
-                for resolved in (
-                    " is available",
-                    " are available",
-                    " is known",
-                    " are known",
-                    " has been measured",
-                    " was measured",
-                    " is confirmed",
-                    " is established",
-                    " evidence exists",
-                )
-            )
-            and not (
-                " matches the exact" in flatten_text(item).lower()
-                and not flatten_text(item).lower().startswith("whether")
+                for pattern in UNKNOWN_CLAIM_PATTERNS
             )
             for item in unknowns
         )

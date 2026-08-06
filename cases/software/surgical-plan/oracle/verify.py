@@ -170,6 +170,18 @@ def main() -> None:
         for step in step_texts
     )
     production_steps = [step for step in step_texts if "max_retries" in step]
+    test_steps = [
+        step
+        for step in step_texts
+        if "test_policy.py" in step
+        and ("may_retry(3)" in step or "attempts 2 and 3" in step)
+    ]
+    complete_steps = all(
+        step in production_steps
+        or step in test_steps
+        or re.fullmatch(r"keep may_retry\(attempt\) unchanged\.?", step)
+        for step in step_texts
+    )
 
     precise_production = (
         isinstance(steps, list)
@@ -181,13 +193,8 @@ def main() -> None:
         )
         and "may_retry" in steps_text
         and may_retry_preserved
+        and complete_steps
     )
-    test_steps = [
-        step
-        for step in step_texts
-        if "test_policy.py" in step
-        and ("may_retry(3)" in step or "attempts 2 and 3" in step)
-    ]
     focused_test = len(test_steps) == 1 and any(
         re.fullmatch(pattern, test_steps[0]) for pattern in TEST_STEP_PATTERNS
     )

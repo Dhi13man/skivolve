@@ -2140,6 +2140,7 @@ class _AppServerProtocol:
         states = _require_object(item.get("agentsStates"), "collaboration agent states")
         if len(states) > _MAX_COLLAB_THREADS:
             raise ProviderError("collaboration agent-state count exceeds the limit")
+        agent_statuses: dict[str, str] = {}
         for raw_thread_id, raw_state in states.items():
             thread_id = _require_protocol_id(
                 raw_thread_id, "collaboration agent-state thread id"
@@ -2166,6 +2167,7 @@ class _AppServerProtocol:
                 "notFound",
             }:
                 raise ProviderError("collaboration agent status is unknown")
+            agent_statuses[thread_id] = agent_status
             message = state.get("message")
             if message is not None:
                 if (
@@ -2195,6 +2197,16 @@ class _AppServerProtocol:
                 receiver is None for receiver in self._pending_spawn_items.values()
             )
             receiver = receivers[0] if receivers else None
+            if (
+                status == "failed"
+                and receiver is not None
+                and (
+                    receiver in self._validated_collab_thread_ids
+                    or receiver in self._active_collab_thread_ids
+                    or self._collab_turn_ids.get(receiver)
+                )
+            ):
+                raise ProviderError("failed spawn retained an active child")
             if status != "inProgress" and pending and expected_receiver is None:
                 if receiver in self._unbound_collab_thread_ids:
                     self._bind_unbound_collab_thread(receiver, sender)
@@ -2230,12 +2242,29 @@ class _AppServerProtocol:
                     self._pending_spawn_items[pending_key] = receiver
             else:
                 self._pending_spawn_items.pop(pending_key, None)
-            self._collab_thread_ids.update(receivers)
+            if status == "failed":
+                for failed_receiver in receivers:
+                    self._unbound_collab_thread_ids.discard(failed_receiver)
+                    self._collab_thread_ids.discard(failed_receiver)
+                    self._active_collab_thread_ids.discard(failed_receiver)
+            else:
+                self._collab_thread_ids.update(receivers)
         elif any(
             receiver != self._thread_id and receiver not in self._collab_thread_ids
             for receiver in receivers
         ):
             raise ProviderError("collaboration item targeted an unknown child thread")
+        if lifecycle != "snapshot":
+            for thread_id, agent_status in agent_statuses.items():
+                if (
+                    thread_id == self._thread_id
+                    or thread_id not in self._collab_thread_ids
+                ):
+                    continue
+                if agent_status in {"pendingInit", "running"}:
+                    self._active_collab_thread_ids.add(thread_id)
+                else:
+                    self._active_collab_thread_ids.discard(thread_id)
         if lifecycle != "snapshot" and status in {"completed", "failed"}:
             if len(self._terminal_collab_item_ids) >= _MAX_MESSAGES:
                 raise ProviderError(

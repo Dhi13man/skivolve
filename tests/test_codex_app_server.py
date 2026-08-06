@@ -998,6 +998,7 @@ class CodexProtocolTests(unittest.TestCase):
             "awaiting-turn",
             "active-turn",
             "resumed-thread",
+            "resumed-item",
         ):
             protocol = _protocol(QueueTransport([]))
             protocol._thread_id = "main-thread"
@@ -1012,7 +1013,7 @@ class CodexProtocolTests(unittest.TestCase):
             elif state == "active-turn":
                 protocol._collab_thread_ids.add("child-1")
                 protocol._collab_turn_ids["child-1"] = {"child-turn"}
-            else:
+            elif state == "resumed-thread":
                 protocol._collab_thread_ids.add("child-1")
                 protocol._seen_collab_turn_ids.add(("child-1", "prior-turn"))
                 protocol._handle_notification(
@@ -1021,6 +1022,20 @@ class CodexProtocolTests(unittest.TestCase):
                         "status": {"activeFlags": [], "type": "active"},
                         "threadId": "child-1",
                     },
+                )
+            else:
+                protocol._collab_thread_ids.add("child-1")
+                protocol._seen_collab_turn_ids.add(("child-1", "prior-turn"))
+                protocol._validate_item(
+                    {
+                        "agentsStates": {"child-1": {"status": "running"}},
+                        "id": "resume-1",
+                        "receiverThreadIds": ["child-1"],
+                        "senderThreadId": "main-thread",
+                        "status": "completed",
+                        "tool": "resumeAgent",
+                        "type": "collabAgentToolCall",
+                    }
                 )
 
             with (
@@ -1509,6 +1524,31 @@ class CodexProtocolTests(unittest.TestCase):
         protocol._validate_item(completed)
         self.assertEqual(protocol._collab_thread_ids, {"child-1"})
         self.assertEqual(protocol._pending_spawn_items, {})
+
+    def test_failed_spawn_releases_unstarted_receiver(self) -> None:
+        protocol = _protocol(QueueTransport([]))
+        protocol._thread_id = "thread-1"
+        initial = {
+            "agentsStates": {},
+            "id": "item-1",
+            "receiverThreadIds": [],
+            "senderThreadId": "thread-1",
+            "status": "inProgress",
+            "tool": "spawnAgent",
+            "type": "collabAgentToolCall",
+        }
+        protocol._validate_item(initial)
+        protocol._validate_item(
+            {
+                **initial,
+                "agentsStates": {"child-1": {"status": "errored"}},
+                "receiverThreadIds": ["child-1"],
+                "status": "failed",
+            }
+        )
+
+        self.assertEqual(protocol._pending_spawn_items, {})
+        self.assertEqual(protocol._collab_thread_ids, set())
 
     def test_completed_spawn_requires_exactly_one_receiver(self) -> None:
         initial = {

@@ -1806,6 +1806,72 @@ class _AppServerProtocol:
                 thread.get("id"), "thread/started.thread.id"
             )
             if self._thread_id is not None and announced != self._thread_id:
+                _require_exact_keys(
+                    thread,
+                    "child thread",
+                    required={
+                        "cliVersion",
+                        "createdAt",
+                        "cwd",
+                        "ephemeral",
+                        "id",
+                        "modelProvider",
+                        "preview",
+                        "sessionId",
+                        "source",
+                        "status",
+                        "turns",
+                        "updatedAt",
+                    },
+                    optional={
+                        "agentNickname",
+                        "agentRole",
+                        "canAcceptDirectInput",
+                        "extra",
+                        "forkedFromId",
+                        "gitInfo",
+                        "historyMode",
+                        "isPinned",
+                        "name",
+                        "parentThreadId",
+                        "path",
+                        "recencyAt",
+                        "threadSource",
+                    },
+                )
+                for field in ("agentNickname", "agentRole", "name"):
+                    value = thread.get(field)
+                    if value is not None and not isinstance(value, str):
+                        raise ProviderError(
+                            f"child thread.{field} must be a string or null"
+                        )
+                direct_input = thread.get("canAcceptDirectInput")
+                if direct_input is not None and type(direct_input) is not bool:
+                    raise ProviderError(
+                        "child thread.canAcceptDirectInput must be a bool or null"
+                    )
+                if "isPinned" in thread and type(thread["isPinned"]) is not bool:
+                    raise ProviderError("child thread.isPinned must be a bool")
+                if thread.get("extra") is not None:
+                    _require_object(thread["extra"], "child thread.extra")
+                git_info = thread.get("gitInfo")
+                if git_info is not None:
+                    git_info = _require_object(git_info, "child thread.gitInfo")
+                    _require_exact_keys(
+                        git_info,
+                        "child thread.gitInfo",
+                        required=set(),
+                        optional={"branch", "originUrl", "sha"},
+                    )
+                    for field in ("branch", "originUrl", "sha"):
+                        value = git_info.get(field)
+                        if value is not None and not isinstance(value, str):
+                            raise ProviderError(
+                                f"child thread.gitInfo.{field} must be a string or null"
+                            )
+                _optional_bounded_integer(
+                    thread.get("recencyAt"), "child thread.recencyAt"
+                )
                 if announced in self._validated_collab_thread_ids:
                     raise ProviderError("Codex announced a child thread more than once")
                 created_at = _optional_bounded_integer(
@@ -3160,6 +3226,7 @@ def _owner_lock(
     except OSError as exc:
         raise ProviderError(f"cannot open {label}: {exc}") from exc
     body_error: BaseException | None = None
+    serialization_timeout: ProviderTimeoutError | None = None
     try:
         identity = _validate_owner_file_descriptor(lock_path, descriptor, label)
         while True:
@@ -3167,27 +3234,36 @@ def _owner_lock(
                 fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
                 break
             except BlockingIOError:
-                _remaining(deadline, f"{label} serialization")
+                try:
+                    _remaining(deadline, f"{label} serialization")
+                except ProviderTimeoutError as exc:
+                    serialization_timeout = exc
+                    break
                 time.sleep(min(0.05, max(0.0, deadline - time.monotonic())))
-        identity = _validate_owner_file_descriptor(lock_path, descriptor, label)
-        try:
-            yield identity
-        except BaseException as exc:
-            body_error = exc
-            raise
-        finally:
+        if serialization_timeout is None:
+            identity = _validate_owner_file_descriptor(lock_path, descriptor, label)
             try:
-                _validate_owner_file_descriptor(lock_path, descriptor, label)
+                yield identity
             except BaseException as exc:
-                if body_error is not None:
-                    body_error.add_note(f"{label} integrity also failed: {exc}")
-                else:
-                    raise
+                body_error = exc
+                raise
+            finally:
+                try:
+                    _validate_owner_file_descriptor(lock_path, descriptor, label)
+                except BaseException as exc:
+                    if body_error is not None:
+                        body_error.add_note(f"{label} integrity also failed: {exc}")
+                    else:
+                        raise
     finally:
         try:
             fcntl.flock(descriptor, fcntl.LOCK_UN)
         finally:
             os.close(descriptor)
+    if serialization_timeout is not None:
+        raise ProviderTimeoutError(
+            str(serialization_timeout), cleanup_confirmed=True
+        ) from serialization_timeout
 
 
 @contextmanager

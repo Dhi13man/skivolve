@@ -2067,11 +2067,47 @@ class CodexProtocolTests(unittest.TestCase):
             self.assertEqual(protocol._unbound_collab_thread_ids, set())
             self.assertEqual(protocol._validated_collab_thread_ids, set())
 
+        invalid_metadata = {
+            "agentNickname": {},
+            "agentRole": [],
+            "canAcceptDirectInput": "true",
+            "extra": [],
+            "gitInfo": {"branch": []},
+            "isPinned": 0,
+            "name": {},
+            "recencyAt": "now",
+            "unknownMetadata": None,
+        }
+        for field, value in invalid_metadata.items():
+            protocol = _protocol(QueueTransport([]))
+            protocol._thread_id = "thread-1"
+            protocol._session_id = "session-1"
+            protocol._validate_item(initial)
+            thread = _child_thread()
+            thread[field] = value
+            with self.subTest(field=field), self.assertRaises(ProviderError):
+                protocol._handle_notification("thread/started", {"thread": thread})
+            self.assertEqual(protocol._collab_thread_ids, set())
+            self.assertEqual(protocol._validated_collab_thread_ids, set())
+
         protocol = _protocol(QueueTransport([]))
         protocol._thread_id = "thread-1"
         protocol._session_id = "session-1"
         protocol._validate_item(initial)
-        protocol._handle_notification("thread/started", {"thread": _child_thread()})
+        thread = _child_thread()
+        thread.update(
+            {
+                "agentNickname": "swift-fox",
+                "agentRole": None,
+                "canAcceptDirectInput": True,
+                "extra": {},
+                "gitInfo": {"branch": None, "originUrl": None, "sha": None},
+                "isPinned": False,
+                "name": None,
+                "recencyAt": 1_700_000_001,
+            }
+        )
+        protocol._handle_notification("thread/started", {"thread": thread})
         self.assertEqual(protocol._validated_collab_thread_ids, {"child-1"})
 
     def test_child_thread_parent_must_own_a_pending_spawn(self) -> None:
@@ -3635,9 +3671,12 @@ class CleanupPoisonStoreTests(unittest.TestCase):
         self.assertTrue(entered.wait(1))
         try:
             other = _CleanupPoisonStore(self.root)
-            with self.assertRaisesRegex(ProviderError, "serialization timed out"):
+            with self.assertRaisesRegex(
+                ProviderTimeoutError, "serialization timed out"
+            ) as caught:
                 with other.lock(time.monotonic() + 0.1):
                     self.fail("independent provider unexpectedly acquired the lock")
+            self.assertTrue(caught.exception.cleanup_confirmed)
         finally:
             release.set()
             thread.join(2)
@@ -4453,9 +4492,12 @@ class CodexProviderTests(unittest.TestCase):
         thread.start()
         self.assertTrue(entered.wait(1))
         try:
-            with self.assertRaisesRegex(ProviderError, "serialization timed out"):
+            with self.assertRaisesRegex(
+                ProviderTimeoutError, "serialization timed out"
+            ) as caught:
                 with _auth_lock(self.auth, time.monotonic() + 0.1):
                     self.fail("second auth lock unexpectedly acquired")
+            self.assertTrue(caught.exception.cleanup_confirmed)
         finally:
             release.set()
             thread.join(2)

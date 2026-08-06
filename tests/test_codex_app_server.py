@@ -921,6 +921,13 @@ class CodexProtocolTests(unittest.TestCase):
         protocol._turn_id = "main-turn"
         protocol._collab_thread_ids.add("child-1")
         protocol._collab_turn_ids["child-1"] = {"child-turn"}
+        protocol._collab_turn_usage[("child-1", "child-turn")] = {
+            "cached_input_tokens": 0,
+            "input_tokens": 1,
+            "output_tokens": 0,
+            "reasoning_output_tokens": 0,
+            "total_tokens": 1,
+        }
 
         protocol._handle_notification(
             "error",
@@ -950,6 +957,50 @@ class CodexProtocolTests(unittest.TestCase):
 
         self.assertIsNone(protocol._turn_completed)
         self.assertEqual(protocol._collab_turn_ids["child-1"], set())
+
+    def test_child_completion_without_usage_keeps_turn_active(self) -> None:
+        protocol = _protocol(QueueTransport([]))
+        protocol._thread_id = "main-thread"
+        protocol._turn_id = "main-turn"
+        protocol._collab_turn_ids["child-1"] = {"child-turn"}
+
+        with self.assertRaisesRegex(ProviderError, "child turn omitted token usage"):
+            protocol._handle_notification(
+                "turn/completed",
+                {
+                    "threadId": "child-1",
+                    "turn": {
+                        "id": "child-turn",
+                        "items": [],
+                        "itemsView": "notLoaded",
+                        "status": "completed",
+                    },
+                },
+            )
+
+        self.assertEqual(protocol._collab_turn_ids["child-1"], {"child-turn"})
+
+    def test_root_completion_with_active_child_is_rejected(self) -> None:
+        protocol = _protocol(QueueTransport([]))
+        protocol._thread_id = "main-thread"
+        protocol._turn_id = "main-turn"
+        protocol._collab_turn_ids["child-1"] = {"child-turn"}
+
+        with self.assertRaisesRegex(ProviderError, "root turn with active child turns"):
+            protocol._handle_notification(
+                "turn/completed",
+                {
+                    "threadId": "main-thread",
+                    "turn": {
+                        "id": "main-turn",
+                        "items": [],
+                        "itemsView": "notLoaded",
+                        "status": "completed",
+                    },
+                },
+            )
+
+        self.assertIsNone(protocol._turn_completed)
 
     def test_missing_usage_rejects_completed_turn(self) -> None:
         transport = ScriptedTransport(Path("/runtime/work"), omit_usage=True)
@@ -1648,6 +1699,22 @@ class CodexProtocolTests(unittest.TestCase):
             },
         )
         protocol._handle_notification(
+            "thread/tokenUsage/updated",
+            {
+                "threadId": "child-1",
+                "tokenUsage": {
+                    "last": {
+                        "cachedInputTokens": 0,
+                        "inputTokens": 1,
+                        "outputTokens": 1,
+                        "reasoningOutputTokens": 0,
+                        "totalTokens": 2,
+                    }
+                },
+                "turnId": "child-turn",
+            },
+        )
+        protocol._handle_notification(
             "turn/completed",
             {
                 "threadId": "child-1",
@@ -2046,6 +2113,13 @@ class CodexProtocolTests(unittest.TestCase):
         protocol._turn_id = "main-turn"
         protocol._collab_thread_ids.add("child-1")
         protocol._validated_collab_thread_ids.add("child-1")
+        protocol._collab_turn_usage[("child-1", "child-turn")] = {
+            "cached_input_tokens": 0,
+            "input_tokens": 1,
+            "output_tokens": 0,
+            "reasoning_output_tokens": 0,
+            "total_tokens": 1,
+        }
         protocol._handle_notification(
             "turn/started",
             {"threadId": "child-1", "turn": {"id": "child-turn"}},

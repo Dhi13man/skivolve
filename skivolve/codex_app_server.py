@@ -2002,6 +2002,11 @@ class _AppServerProtocol:
                 ):
                     raise ProviderError("Codex completed an unknown child turn")
                 self._validate_completed_turn(turn, completed_thread_id)
+                if (
+                    completed_thread_id,
+                    completed_turn_id,
+                ) not in self._collab_turn_usage:
+                    raise ProviderError("Codex child turn omitted token usage")
                 self._collab_turn_ids[completed_thread_id].remove(completed_turn_id)
                 return
             if self._turn_id is None or completed_turn_id != self._turn_id:
@@ -2009,6 +2014,8 @@ class _AppServerProtocol:
             if self._turn_completed is not None:
                 raise ProviderError("Codex completed the same turn more than once")
             self._validate_completed_turn(turn, completed_thread_id)
+            if any(self._collab_turn_ids.values()):
+                raise ProviderError("Codex completed root turn with active child turns")
             self._turn_completed = turn
             return
         if method in _IGNORED_NOTIFICATIONS:

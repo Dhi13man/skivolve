@@ -1669,6 +1669,17 @@ class _AppServerProtocol:
 
     def _handle_notification(self, method: str, raw_params: Any) -> None:
         params = _require_object(raw_params, "notification params")
+        if self._turn_completed is not None and (
+            method.startswith(("item/", "model/", "turn/"))
+            or method
+            in {
+                "error",
+                "thread/started",
+                "thread/status/changed",
+                "thread/tokenUsage/updated",
+            }
+        ):
+            raise ProviderError("Codex emitted turn traffic after root completion")
         if method == "model/rerouted":
             raise ProviderError("Codex rerouted the pinned model")
         if method == "error":

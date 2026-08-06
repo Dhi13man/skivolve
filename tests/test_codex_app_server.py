@@ -779,6 +779,41 @@ class CodexProtocolTests(unittest.TestCase):
         )
         self.assertEqual(outcome.raw_response["usage"], outcome.tokens)
 
+    def test_post_completion_quota_read_rejects_new_collaboration_work(self) -> None:
+        class PostCompletionTransport(ScriptedTransport):
+            def send(self, payload: bytes, deadline: float) -> None:
+                message = json.loads(payload)
+                if (
+                    message.get("method") == "account/rateLimits/read"
+                    and self.rate_reads == 1
+                ):
+                    self.incoming.append(
+                        _line(
+                            {
+                                "method": "item/started",
+                                "params": {
+                                    "item": {
+                                        "agentsStates": {},
+                                        "id": "late-spawn",
+                                        "receiverThreadIds": [],
+                                        "senderThreadId": self.thread_id,
+                                        "status": "inProgress",
+                                        "tool": "spawnAgent",
+                                        "type": "collabAgentToolCall",
+                                    },
+                                    "threadId": self.thread_id,
+                                    "turnId": self.turn_id,
+                                },
+                            }
+                        )
+                    )
+                super().send(payload, deadline)
+
+        with self.assertRaisesRegex(ProviderError, "after root completion"):
+            _protocol(PostCompletionTransport(Path("/runtime/work"))).run(
+                "request", time.monotonic() + 5
+            )
+
     def test_thread_cli_version_mismatch_fails_before_turn_start(self) -> None:
         for version in ("codex-cli 0.144.1", "0.144.2"):
             with self.subTest(version=version):

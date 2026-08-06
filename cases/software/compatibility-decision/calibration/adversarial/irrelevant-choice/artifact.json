@@ -1,0 +1,7 @@
+{
+  "status": "blocked",
+  "question": "Should we delete both v3 and legacy accountId, or abandon serialization?",
+  "recommendation": "Keep v3 names stable until the owner decides; do not migrate South.",
+  "reason": "North requires public v3 account_id and created_at, while South requires legacy accountId and createdAt; no migration owner or date resolves the conflict.",
+  "actions_taken": "No files were edited; the workspace is unchanged."
+}

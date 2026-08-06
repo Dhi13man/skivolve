@@ -224,11 +224,14 @@ class SoftwareCalibrationExpectationTests(unittest.TestCase):
             target = workspace / "value.txt"
             target.write_text("first\n", encoding="utf-8")
             initial = SOFTWARE.workspace_fingerprint(workspace)
+            workspace.chmod(workspace.stat().st_mode | stat.S_IWGRP)
+            after_root_mode = SOFTWARE.workspace_fingerprint(workspace)
             target.chmod(target.stat().st_mode | stat.S_IXUSR)
             after_mode = SOFTWARE.workspace_fingerprint(workspace)
             target.write_text("second\n", encoding="utf-8")
             after_content = SOFTWARE.workspace_fingerprint(workspace)
-        self.assertNotEqual(initial, after_mode)
+        self.assertNotEqual(initial, after_root_mode)
+        self.assertNotEqual(after_root_mode, after_mode)
         self.assertNotEqual(after_mode, after_content)
 
     def test_expectation_opt_in_requires_every_variant(self) -> None:

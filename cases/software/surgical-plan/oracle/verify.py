@@ -42,6 +42,15 @@ def main() -> None:
         )
         and "may_retry" in steps_text
         and any(word in steps_text for word in ("unchanged", "preserve", "keep"))
+        and not any(
+            change in steps_text
+            for change in (
+                "change may_retry",
+                "modify may_retry",
+                "replace may_retry",
+                "rewrite may_retry",
+            )
+        )
     )
     focused_test = "test_policy.py" in steps_text and (
         ("may_retry(3) is true" in steps_text and "may_retry(4) is false" in steps_text)

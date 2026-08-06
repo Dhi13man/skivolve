@@ -27,12 +27,29 @@ def main() -> None:
     status = flatten_text(values.get("status", "")).lower()
     actions = flatten_text(values.get("actions_taken", "")).lower()
 
+    preserves_v3 = any(
+        phrase in question
+        for phrase in (
+            "keep v3",
+            "v3 keep",
+            "preserve v3",
+            "retain v3",
+            "v3 retain",
+            "v3 remain stable",
+            "continue receiving v3",
+            "serialization keep v3",
+        )
+    )
+    authorizes_legacy = "legacy" in question and any(
+        word in question
+        for word in ("authorize", "emit", "switch", "changing", "change ")
+    )
     pointed_choice = (
         isinstance(values.get("question"), str)
         and question.count("?") == 1
         and " or " in question
-        and "v3" in question
-        and ("legacy" in question or "accountid" in question)
+        and preserves_v3
+        and authorizes_legacy
     )
     safe_default = recommendation.startswith(
         (

@@ -253,6 +253,7 @@ def discover_good_variants(
 
 def workspace_fingerprint(workspace: Path) -> str:
     digest = hashlib.sha256()
+    digest.update(workspace.lstat().st_mode.to_bytes(4, "big"))
     for path in sorted(workspace.rglob("*")):
         relative = path.relative_to(workspace).as_posix()
         digest.update(relative.encode("utf-8"))

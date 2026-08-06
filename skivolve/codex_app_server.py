@@ -1261,7 +1261,9 @@ class _AppServerProtocol:
         self._seen_collab_turn_ids: set[tuple[str, str]] = set()
         self._collab_turn_usage: dict[tuple[str, str], dict[str, int]] = {}
         self._pending_spawn_items: dict[tuple[str, str], str | None] = {}
-        self._completed_spawn_receivers: dict[tuple[str, str], str] = {}
+        self._terminal_spawn_history: dict[
+            tuple[str, str], tuple[str, tuple[str, ...]]
+        ] = {}
         self._terminal_collab_item_ids: set[tuple[str, str]] = set()
         self._unbound_collab_thread_ids: set[str] = set()
         self._retained_text_bytes = 0
@@ -1881,15 +1883,29 @@ class _AppServerProtocol:
                     raise ProviderError(
                         "Codex child thread provenance differs from the root request"
                     )
-                if not any(
-                    sender == parent_id and receiver in {None, announced}
-                    for (
-                        sender,
-                        _item_id,
-                    ), receiver in self._pending_spawn_items.items()
+                if not (
+                    any(
+                        sender == parent_id and receiver in {None, announced}
+                        for (
+                            sender,
+                            _item_id,
+                        ), receiver in self._pending_spawn_items.items()
+                    )
+                    or any(
+                        sender == parent_id
+                        and spawn_status == "completed"
+                        and spawn_receivers == (announced,)
+                        for (
+                            sender,
+                            _item_id,
+                        ), (
+                            spawn_status,
+                            spawn_receivers,
+                        ) in self._terminal_spawn_history.items()
+                    )
                 ):
                     raise ProviderError(
-                        "Codex child thread lacked a parent-owned pending spawn"
+                        "Codex child thread lacked parent-owned spawn history"
                     )
                 if not self._claim_collab_thread_scope(announced):
                     raise ProviderError("Codex thread announcement changed scope")
@@ -2200,16 +2216,13 @@ class _AppServerProtocol:
                 receiver is None for receiver in self._pending_spawn_items.values()
             )
             receiver = receivers[0] if receivers else None
-            if (
-                lifecycle == "snapshot"
-                and status == "completed"
-                and (
-                    self._completed_spawn_receivers.get(item_scope) != receiver
-                    or receiver not in self._collab_thread_ids
-                )
+            if lifecycle == "snapshot" and (
+                self._terminal_spawn_history.get(item_scope)
+                != (status, tuple(receivers))
+                or (status == "completed" and receiver not in self._collab_thread_ids)
             ):
                 raise ProviderError(
-                    "completed spawnAgent snapshot lacked a matching live completion"
+                    "spawnAgent snapshot lacked matching live terminal history"
                 )
             if lifecycle != "snapshot" and status != "failed":
                 for claimed_receiver in receivers:
@@ -2304,8 +2317,8 @@ class _AppServerProtocol:
                     "terminal collaboration item count exceeds the limit"
                 )
             self._terminal_collab_item_ids.add(item_scope)
-            if tool == "spawnAgent" and status == "completed":
-                self._completed_spawn_receivers[item_scope] = receivers[0]
+            if tool == "spawnAgent":
+                self._terminal_spawn_history[item_scope] = (status, tuple(receivers))
 
     def _validate_completed_turn(
         self, turn: dict[str, Any], owner_thread_id: str

@@ -1646,6 +1646,34 @@ class CodexProtocolTests(unittest.TestCase):
         self.assertEqual(protocol._collab_thread_ids, {"child-1"})
         self.assertEqual(protocol._pending_spawn_items, {})
 
+    def test_pending_spawn_claims_its_explicit_receiver(self) -> None:
+        protocol = _protocol(QueueTransport([]))
+        protocol._thread_id = "thread-1"
+        item = {
+            "agentsStates": {},
+            "id": "item-1",
+            "receiverThreadIds": ["child-1"],
+            "senderThreadId": "thread-1",
+            "status": "inProgress",
+            "tool": "spawnAgent",
+            "type": "collabAgentToolCall",
+        }
+
+        protocol._validate_item(item)
+        protocol._handle_notification(
+            "thread/status/changed",
+            {
+                "status": {"activeFlags": [], "type": "active"},
+                "threadId": "child-1",
+            },
+        )
+
+        self.assertEqual(
+            protocol._pending_spawn_items, {("thread-1", "item-1"): "child-1"}
+        )
+        self.assertEqual(protocol._collab_thread_ids, {"child-1"})
+        self.assertEqual(protocol._collab_parent_ids, {"child-1": "thread-1"})
+
     def test_failed_spawn_releases_unstarted_receiver(self) -> None:
         protocol = _protocol(QueueTransport([]))
         protocol._thread_id = "thread-1"

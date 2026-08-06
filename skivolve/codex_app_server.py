@@ -2412,6 +2412,9 @@ class _AppServerProtocol:
                     if len(self._pending_spawn_items) >= _MAX_COLLAB_THREADS:
                         raise ProviderError("pending spawn count exceeds the limit")
                     self._pending_spawn_items[pending_key] = receiver
+                    if receiver is not None:
+                        self._collab_parent_ids[receiver] = sender
+                        self._collab_thread_ids.add(receiver)
                 elif expected_receiver is None and receiver is not None:
                     if receiver in self._unbound_collab_thread_ids:
                         self._bind_unbound_collab_thread(receiver, sender)

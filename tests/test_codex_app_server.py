@@ -2023,9 +2023,7 @@ class CodexProtocolTests(unittest.TestCase):
         )
         thread = _child_thread()
         thread["parentThreadId"] = "child-a"
-        thread["source"]["subAgent"]["thread_spawn"][
-            "parent_thread_id"
-        ] = "child-a"
+        thread["source"]["subAgent"]["thread_spawn"]["parent_thread_id"] = "child-a"
 
         with self.assertRaisesRegex(ProviderError, "provenance"):
             protocol._handle_notification("thread/started", {"thread": thread})

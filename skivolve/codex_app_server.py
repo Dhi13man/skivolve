@@ -1863,9 +1863,7 @@ class _AppServerProtocol:
                     or self._session_id is None
                     or session_id != self._session_id
                     or parent_id != source_parent_id
-                    or (
-                        bound_parent_id is not None and bound_parent_id != parent_id
-                    )
+                    or (bound_parent_id is not None and bound_parent_id != parent_id)
                     or (
                         parent_id != self._thread_id
                         and parent_id not in self._validated_collab_thread_ids

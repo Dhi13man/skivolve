@@ -1262,7 +1262,7 @@ class _AppServerProtocol:
         self._seen_collab_turn_ids: set[tuple[str, str]] = set()
         self._collab_turn_usage: dict[tuple[str, str], dict[str, int]] = {}
         self._pending_spawn_items: dict[
-            tuple[str, str], tuple[str | None, str | None]
+            tuple[str, str], tuple[str | None, bytes | None]
         ] = {}
         self._terminal_collab_history: dict[
             tuple[str, str],
@@ -1272,7 +1272,7 @@ class _AppServerProtocol:
                 tuple[str, ...],
                 tuple[tuple[str, str], ...],
                 str | None,
-                str | None,
+                bytes | None,
                 str | None,
             ],
         ] = {}
@@ -2011,7 +2011,7 @@ class _AppServerProtocol:
                             spawn_receivers,
                             _agent_statuses,
                             _model,
-                            _prompt,
+                            _prompt_digest,
                             _reasoning_effort,
                         ) in self._terminal_collab_history.items()
                     )
@@ -2286,6 +2286,11 @@ class _AppServerProtocol:
         ):
             if value is not None and not isinstance(value, str):
                 raise ProviderError(f"collaboration {field} must be a string or null")
+        prompt_digest = (
+            hashlib.sha256(prompt.encode("utf-8")).digest()
+            if prompt is not None
+            else None
+        )
         spawn_placeholder = tool == "spawnAgent" and (
             lifecycle == "started"
             or (
@@ -2358,7 +2363,7 @@ class _AppServerProtocol:
             tuple(receivers),
             tuple(sorted(agent_statuses.items())),
             model,
-            prompt,
+            prompt_digest,
             reasoning_effort,
         )
         if (
@@ -2390,12 +2395,16 @@ class _AppServerProtocol:
                 raise ProviderError("spawnAgent must have at most one receiver")
             pending_key = (sender, item_id)
             pending = pending_key in self._pending_spawn_items
-            expected_receiver, expected_prompt = self._pending_spawn_items.get(
+            expected_receiver, expected_prompt_digest = self._pending_spawn_items.get(
                 pending_key, (None, None)
             )
             if status == "inProgress" and pending:
                 raise ProviderError("spawnAgent item was already in progress")
-            if lifecycle == "completed" and pending and prompt != expected_prompt:
+            if (
+                lifecycle == "completed"
+                and pending
+                and prompt_digest != expected_prompt_digest
+            ):
                 raise ProviderError(
                     "terminal spawnAgent prompt disagreed with its start"
                 )
@@ -2405,7 +2414,7 @@ class _AppServerProtocol:
                 )
             unbound_slots = sum(
                 receiver is None
-                for receiver, _prompt in self._pending_spawn_items.values()
+                for receiver, _prompt_digest in self._pending_spawn_items.values()
             )
             receiver = receivers[0] if receivers else None
             failed_reservation = None
@@ -2473,7 +2482,7 @@ class _AppServerProtocol:
                     raise ProviderError("spawnAgent receiver was already claimed")
                 if len(self._pending_spawn_items) >= _MAX_COLLAB_THREADS:
                     raise ProviderError("pending spawn count exceeds the limit")
-                self._pending_spawn_items[pending_key] = (receiver, prompt)
+                self._pending_spawn_items[pending_key] = (receiver, prompt_digest)
             else:
                 self._pending_spawn_items.pop(pending_key, None)
             if lifecycle == "snapshot":
@@ -2591,7 +2600,8 @@ class _AppServerProtocol:
         if thread_id in self._collab_thread_ids:
             return True
         open_spawn_slots = sum(
-            receiver is None for receiver, _prompt in self._pending_spawn_items.values()
+            receiver is None
+            for receiver, _prompt_digest in self._pending_spawn_items.values()
         )
         if len(self._unbound_collab_thread_ids) >= open_spawn_slots:
             return False

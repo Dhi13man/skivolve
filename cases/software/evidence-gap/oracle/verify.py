@@ -61,16 +61,18 @@ def main() -> None:
             or (
                 source == "pilot_primary.txt"
                 and not any(token in claim for token in ("9%", "earlier", "bursty"))
+                and ("18%" not in claim or ("median" in claim and "reduc" in claim))
                 and (
-                    ("18%" in claim and "median" in claim)
+                    ("18%" in claim and "median" in claim and "reduc" in claim)
                     or ("tail" in claim and "not measured" in claim)
                 )
             )
             or (
                 source == "pilot_counter.txt"
                 and not any(token in claim for token in ("18%", "50-request", "median"))
+                and ("9%" not in claim or ("p99" in claim and "increas" in claim))
                 and (
-                    ("9%" in claim and "p99" in claim)
+                    ("9%" in claim and "p99" in claim and "increas" in claim)
                     or (
                         any(token in claim for token in ("earlier", "build"))
                         and any(

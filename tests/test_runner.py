@@ -3089,7 +3089,7 @@ print(json.dumps({
             self.assertTrue(arm["verifier"]["sandbox"]["agent_workspace_mutated"])
             self.assertFalse(arm["verifier"]["workspace_mutated"])
 
-    def test_final_output_mutation_signal_covers_directories_and_permissions(
+    def test_final_output_mutation_signal_covers_all_workspace_entries(
         self,
     ) -> None:
         self.fixture.use_objective(artifact_kind="final_output_json")
@@ -3117,9 +3117,15 @@ print(json.dumps({
         def remove_owner_write_permission(workspace: Path) -> None:
             (workspace / "input.txt").chmod(0o444)
 
+        def create_cache_file(workspace: Path) -> None:
+            cache = workspace / "__pycache__"
+            cache.mkdir()
+            (cache / "note.txt").write_text("agent-created\n", encoding="utf-8")
+
         mutations = (
             ("empty-directory", create_empty_directory),
             ("file-permission", remove_owner_write_permission),
+            ("cache-file", create_cache_file),
         )
         for name, mutate in mutations:
             with self.subTest(name=name):

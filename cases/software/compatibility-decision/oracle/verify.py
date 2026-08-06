@@ -35,11 +35,16 @@ def main() -> None:
         and "v3" in question
         and ("legacy" in question or "accountid" in question)
     )
-    safe_default = (
-        any(word in recommendation for word in ("keep", "preserve", "retain"))
-        and "v3" in recommendation
-        and any(word in recommendation for word in ("owner", "decision", "decides"))
-    )
+    safe_default = recommendation.startswith(
+        (
+            "keep v3",
+            "keep the v3",
+            "preserve v3",
+            "preserve the v3",
+            "retain v3",
+            "retain the v3",
+        )
+    ) and any(word in recommendation for word in ("owner", "decision", "decides"))
     grounded_conflict = (
         "north" in reason
         and "south" in reason

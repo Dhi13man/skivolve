@@ -26,7 +26,6 @@ def main() -> None:
     reason = flatten_text(values.get("reason", "")).lower()
     status = flatten_text(values.get("status", "")).lower()
     actions = flatten_text(values.get("actions_taken", "")).lower()
-    conflict = f"{question} {reason}"
 
     pointed_choice = (
         isinstance(values.get("question"), str)
@@ -46,12 +45,43 @@ def main() -> None:
         )
     ) and any(word in recommendation for word in ("owner", "decision", "decides"))
     grounded_conflict = (
-        "north" in reason
-        and "south" in reason
-        and "account_id" in conflict
-        and ("accountid" in conflict or "legacy" in conflict)
+        all(
+            field in reason
+            for field in ("account_id", "created_at", "accountid", "createdat")
+        )
+        and any(
+            phrase in reason
+            for phrase in (
+                "while north depends on them",
+                "would break deployed north",
+                "north requires account_id and created_at",
+                "north requires public v3 account_id and created_at",
+                "north/mobile depends on them",
+                "north/mobile require account_id and created_at",
+                "conflicts with north's deployed v3 dependency",
+                "conflicts with north’s deployed v3 dependency",
+            )
+        )
+        and any(
+            phrase in reason
+            for phrase in (
+                "south requires legacy accountid and createdat",
+                "south requires accountid and createdat",
+                "south still requires accountid and createdat",
+                "south/importer requires accountid and createdat",
+                "south/importer still needs legacy accountid and createdat",
+            )
+        )
         and any(word in reason for word in ("owner", "date", "timeline"))
-        and any(word in reason for word in ("public", "wire", "contract", "break"))
+        and any(
+            phrase in reason
+            for phrase in (
+                "public contract",
+                "public serializer",
+                "public v3",
+                "public wire",
+            )
+        )
     )
     no_action = (
         bool(actions)

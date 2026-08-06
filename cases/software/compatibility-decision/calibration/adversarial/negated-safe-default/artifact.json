@@ -2,6 +2,6 @@
   "status": "blocked_on_migration_decision",
   "question": "Should the owner preserve v3 names and migrate South, or change new-client output to legacy names and update North?",
   "recommendation": "Do not preserve v3; the owner decides the migration.",
-  "reason": "Changing account_id or created_at is a public wire change that conflicts with North's deployed v3 dependency, while South's migration has no recorded owner or date.",
+  "reason": "Changing public wire fields account_id or created_at conflicts with North's deployed v3 dependency, while South requires legacy accountId and createdAt without a recorded migration owner or date.",
   "actions_taken": "Inspected the contract and consumer notes; no workspace changes or compatibility behavior were added."
 }

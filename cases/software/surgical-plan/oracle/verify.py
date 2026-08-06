@@ -22,7 +22,7 @@ def main() -> None:
     artifact = read_artifact()
     values = artifact or {}
     steps = values.get("steps")
-    steps_text = flatten_text(steps).lower()
+    steps_text = flatten_text(steps).lower().replace("`", "")
     verification = flatten_text(values.get("verification", "")).lower()
     non_goals = values.get("non_goals")
     non_goals_text = flatten_text(non_goals).lower()
@@ -38,15 +38,11 @@ def main() -> None:
         and "may_retry" in steps_text
         and any(word in steps_text for word in ("unchanged", "preserve", "keep"))
     )
-    focused_test = (
-        "test_policy.py" in steps_text
-        and (
-            ("may_retry(3)" in steps_text and "may_retry(4)" in steps_text)
-            or ("attempts 2 and 3" in steps_text and "attempt 4" in steps_text)
-        )
-        and (
-            ("true" in steps_text and "false" in steps_text)
-            or ("accepted" in steps_text and "rejected" in steps_text)
+    focused_test = "test_policy.py" in steps_text and (
+        ("may_retry(3) is true" in steps_text and "may_retry(4) is false" in steps_text)
+        or (
+            "attempts 2 and 3 are accepted" in steps_text
+            and "attempt 4 is rejected" in steps_text
         )
     )
     native_command = (

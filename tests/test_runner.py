@@ -2903,6 +2903,28 @@ print(json.dumps({"passed": True, "assertions": [
             self.assertTrue(arm["verifier"]["workspace_mutated"])
             self.assertNotIn("verifier-created.txt", arm["diff"])
 
+    def test_workspace_diff_excludes_generated_agent_caches(self) -> None:
+        provider = self.fixture.provider()
+        original_handler = provider._agent_handler
+
+        def create_cache(request):
+            result = original_handler(request)
+            cache = request.workspace / "__pycache__"
+            cache.mkdir()
+            (cache / "note.pyc").write_bytes(b"generated cache")
+            return result
+
+        provider._agent_handler = create_cache
+        result = self.runner(provider).run(
+            RunSelection(comparison_ids=("without-current",)),
+            output_dir=self.output("agent-cache-diff"),
+        )
+
+        self.assertTrue(result["passed"], result)
+        for arm in result["pairs"][0]["arms"].values():
+            self.assertTrue(arm["verifier"]["sandbox"]["agent_workspace_mutated"])
+            self.assertNotIn("__pycache__", arm["diff"])
+
     def test_run_when_artifact_is_final_text_keeps_workspace_read_only(self) -> None:
         # Arrange
         self.fixture.use_objective()

@@ -3449,7 +3449,7 @@ class EvalRunner:
         try:
             self._assert_case_integrity(case)
             _copy_tree(case.fixture_dir, workspace, ignore_generated_caches=True)
-            before = _read_tree(workspace)
+            before = _read_tree(workspace, ignore_generated_caches=True)
             before_permissions = _read_tree_permissions(workspace)
             hashes["fixture_before_sha256"] = _states_hash(before)
             stage = "source_materialization"
@@ -3557,10 +3557,12 @@ class EvalRunner:
                 artifact_root / "final_output.txt", provider_result.final_output
             )
             stage = "agent_workspace_scan"
-            after_agent = _read_tree(workspace)
+            after_agent = _read_tree(workspace, ignore_generated_caches=True)
+            after_agent_mutation = _read_tree(workspace)
             after_agent_permissions = _read_tree_permissions(workspace)
             agent_workspace_mutated = (
-                before != after_agent or before_permissions != after_agent_permissions
+                before != after_agent_mutation
+                or before_permissions != after_agent_permissions
             )
             hashes["workspace_after_agent_sha256"] = _states_hash(after_agent)
             diff_text = _diff_states(before, after_agent)

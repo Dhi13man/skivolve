@@ -44,12 +44,35 @@ def main() -> None:
         and "failure.log:2" in evidence_text
         and "worker.py:2" in evidence_text
     )
-    checked = verification.startswith(
-        (
-            "executed ",
-            "reproduced ",
-            "directly executed ",
-            "python3 -m py_compile passed",
+    checked = (
+        verification.startswith(
+            (
+                "executed ",
+                "reproduced ",
+                "directly executed ",
+                "python3 -m py_compile passed",
+            )
+        )
+        and not any(
+            phrase in verification
+            for phrase in (
+                "executed no",
+                "reproduced no",
+                "no check",
+                "not observed",
+                "not confirmed",
+                "not run",
+            )
+        )
+        and (
+            (
+                "outcome(0)" in verification
+                and any(
+                    result in verification
+                    for result in ("observed", "results", "confirmed", "=")
+                )
+            )
+            or ("assertionerror" in verification and "failed" in verification)
         )
     )
     honest_gap = bool(unverified) and any(

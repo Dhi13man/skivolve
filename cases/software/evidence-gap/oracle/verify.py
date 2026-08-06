@@ -56,6 +56,42 @@ def main() -> None:
             (
                 source == "decision_rule.txt"
                 and not any(token in claim for token in ("18%", "9%", "q-17"))
+                and not any(
+                    phrase in claim
+                    for phrase in (
+                        "does not require",
+                        "not required",
+                        "requires no",
+                        "must not include",
+                        "without production",
+                        "without p99",
+                        "exclude p99",
+                        "omit p99",
+                    )
+                )
+                and (
+                    "production" not in claim
+                    and "p99" not in claim
+                    or (
+                        "production" in claim
+                        and "p99" in claim
+                        and any(
+                            phrase in claim
+                            for phrase in (
+                                "requires evidence",
+                                "requires exact-candidate",
+                                "p99 evidence is required",
+                                "must include p99",
+                            )
+                        )
+                    )
+                )
+                and (
+                    "median" not in claim
+                    or any(
+                        phrase in claim for phrase in ("insufficient", "not sufficient")
+                    )
+                )
                 and (("production" in claim and "p99" in claim) or "median" in claim)
             )
             or (

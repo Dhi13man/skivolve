@@ -23,6 +23,11 @@ def main() -> None:
     values = artifact or {}
     steps = values.get("steps")
     steps_text = flatten_text(steps).lower().replace("`", "")
+    step_texts = (
+        [flatten_text(step).lower().replace("`", "") for step in steps]
+        if isinstance(steps, list)
+        else []
+    )
     verification_value = values.get("verification", "")
     command_value = (
         verification_value.get("command", "")
@@ -42,6 +47,21 @@ def main() -> None:
         if isinstance(non_goals, list)
         else ""
     )
+    may_retry_preserved = all(
+        "may_retry" not in step
+        or "test_policy.py" in step
+        or any(
+            phrase in step
+            for phrase in (
+                "keep may_retry",
+                "leave may_retry",
+                "preserve may_retry",
+                "may_retry(attempt) unchanged",
+                "may_retry unchanged",
+            )
+        )
+        for step in step_texts
+    )
 
     precise_production = (
         isinstance(steps, list)
@@ -56,16 +76,7 @@ def main() -> None:
             )
         )
         and "may_retry" in steps_text
-        and any(word in steps_text for word in ("unchanged", "preserve", "keep"))
-        and not any(
-            change in steps_text
-            for change in (
-                "change may_retry",
-                "modify may_retry",
-                "replace may_retry",
-                "rewrite may_retry",
-            )
-        )
+        and may_retry_preserved
     )
     focused_test = "test_policy.py" in steps_text and (
         ("may_retry(3) is true" in steps_text and "may_retry(4) is false" in steps_text)

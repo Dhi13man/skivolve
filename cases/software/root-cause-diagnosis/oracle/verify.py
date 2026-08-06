@@ -24,7 +24,6 @@ def main() -> None:
     verdict = flatten_text(values.get("verdict", "")).lower()
     cause = flatten_text(values.get("root_cause", "")).lower()
     evidence = values.get("evidence")
-    evidence_text = flatten_text(evidence).lower()
     evidence_items = (
         [
             flatten_text(item)
@@ -39,12 +38,11 @@ def main() -> None:
     )
     verification = flatten_text(values.get("verification", "")).lower()
     unverified = flatten_text(values.get("unverified", "")).lower()
-    diagnosis = f"{verdict} {cause} {evidence_text}"
-    diagnosis_plain = diagnosis.replace("`", "").replace('"', "").replace("'", "")
+    cause_plain = cause.replace("`", "").replace('"', "").replace("'", "")
     verification_plain = verification.replace("`", "").replace('"', "").replace("'", "")
 
     zero_observed_ok = any(
-        phrase in diagnosis_plain
+        phrase in cause_plain
         for phrase in (
             "outcome(0) returns ok",
             "outcome(0)=ok",
@@ -55,9 +53,9 @@ def main() -> None:
             "initial attempt enters the ok branch",
         )
     ) or (
-        "attempts=0" in diagnosis_plain
+        "attempts=0" in cause_plain
         and any(
-            phrase in diagnosis_plain
+            phrase in cause_plain
             for phrase in (
                 "observed ok",
                 "observed=ok",
@@ -71,10 +69,9 @@ def main() -> None:
 
     concrete_cause = (
         any(word in verdict for word in ("fail", "bug", "zero"))
-        and ("0" in diagnosis or "zero" in diagnosis)
+        and ("0" in cause or "zero" in cause or "initial attempt" in cause)
         and any(
-            token in diagnosis
-            for token in (">= 0", ">=0", "nonnegative", "includes zero")
+            token in cause for token in (">= 0", ">=0", "nonnegative", "includes zero")
         )
         and zero_observed_ok
     )

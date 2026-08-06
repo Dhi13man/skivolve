@@ -52,6 +52,18 @@ def main() -> None:
     attributed_facts = all(
         claim
         and source in ALLOWED_SOURCES
+        and not any(
+            phrase in claim
+            for phrase in (
+                "this proves",
+                "safe for",
+                "every production workload",
+                "all production workloads",
+                "guarantees",
+                "production-ready",
+                "universally safe",
+            )
+        )
         and (
             (
                 source == "decision_rule.txt"

@@ -921,6 +921,7 @@ class CodexProtocolTests(unittest.TestCase):
         protocol._turn_id = "main-turn"
         protocol._collab_thread_ids.add("child-1")
         protocol._collab_turn_ids["child-1"] = {"child-turn"}
+        protocol._active_collab_thread_ids.add("child-1")
         protocol._collab_turn_usage[("child-1", "child-turn")] = {
             "cached_input_tokens": 0,
             "input_tokens": 1,
@@ -957,6 +958,7 @@ class CodexProtocolTests(unittest.TestCase):
 
         self.assertIsNone(protocol._turn_completed)
         self.assertEqual(protocol._collab_turn_ids["child-1"], set())
+        self.assertEqual(protocol._active_collab_thread_ids, set())
 
     def test_child_completion_without_usage_keeps_turn_active(self) -> None:
         protocol = _protocol(QueueTransport([]))
@@ -995,6 +997,7 @@ class CodexProtocolTests(unittest.TestCase):
             "bound-thread",
             "awaiting-turn",
             "active-turn",
+            "resumed-thread",
         ):
             protocol = _protocol(QueueTransport([]))
             protocol._thread_id = "main-thread"
@@ -1006,9 +1009,19 @@ class CodexProtocolTests(unittest.TestCase):
             elif state == "awaiting-turn":
                 protocol._collab_thread_ids.add("child-1")
                 protocol._validated_collab_thread_ids.add("child-1")
-            else:
+            elif state == "active-turn":
                 protocol._collab_thread_ids.add("child-1")
                 protocol._collab_turn_ids["child-1"] = {"child-turn"}
+            else:
+                protocol._collab_thread_ids.add("child-1")
+                protocol._seen_collab_turn_ids.add(("child-1", "prior-turn"))
+                protocol._handle_notification(
+                    "thread/status/changed",
+                    {
+                        "status": {"activeFlags": [], "type": "active"},
+                        "threadId": "child-1",
+                    },
+                )
 
             with (
                 self.subTest(state=state),

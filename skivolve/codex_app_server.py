@@ -1257,6 +1257,7 @@ class _AppServerProtocol:
         self._validated_collab_thread_ids: set[str] = set()
         self._collab_parent_ids: dict[str, str] = {}
         self._collab_turn_ids: dict[str, set[str]] = {}
+        self._active_collab_thread_ids: set[str] = set()
         self._seen_collab_turn_ids: set[tuple[str, str]] = set()
         self._collab_turn_usage: dict[tuple[str, str], dict[str, int]] = {}
         self._pending_spawn_items: dict[tuple[str, str], str | None] = {}
@@ -2008,6 +2009,7 @@ class _AppServerProtocol:
                 ) not in self._collab_turn_usage:
                     raise ProviderError("Codex child turn omitted token usage")
                 self._collab_turn_ids[completed_thread_id].remove(completed_turn_id)
+                self._active_collab_thread_ids.discard(completed_thread_id)
                 return
             if self._turn_id is None or completed_turn_id != self._turn_id:
                 raise ProviderError("Codex completed an unknown turn")
@@ -2020,6 +2022,7 @@ class _AppServerProtocol:
             if (
                 self._pending_spawn_items
                 or any(self._collab_turn_ids.values())
+                or self._active_collab_thread_ids
                 or not self._collab_thread_ids <= children_with_turns
             ):
                 raise ProviderError(
@@ -2326,7 +2329,7 @@ class _AppServerProtocol:
             thread_id = _require_protocol_id(
                 params.get("threadId"), "thread/status/changed.threadId"
             )
-            self._validate_thread_status(
+            status_type = self._validate_thread_status(
                 _require_object(params.get("status"), "thread/status/changed.status"),
                 "thread/status/changed.status",
             )
@@ -2338,6 +2341,11 @@ class _AppServerProtocol:
             ):
                 if not self._claim_collab_thread_scope(thread_id):
                     raise ProviderError("thread/status/changed changed thread scope")
+            if thread_id != self._thread_id:
+                if status_type == "active":
+                    self._active_collab_thread_ids.add(thread_id)
+                else:
+                    self._active_collab_thread_ids.discard(thread_id)
             return
         thread_id = params.get("threadId")
         turn_id = params.get("turnId")
@@ -2349,7 +2357,7 @@ class _AppServerProtocol:
                 raise ProviderError(f"{method} targeted an unknown turn")
 
     @staticmethod
-    def _validate_thread_status(status: dict[str, Any], label: str) -> None:
+    def _validate_thread_status(status: dict[str, Any], label: str) -> str:
         status_type = _require_string(status.get("type"), f"{label}.type")
         if status_type == "active":
             _require_exact_keys(
@@ -2372,6 +2380,7 @@ class _AppServerProtocol:
             _require_exact_keys(status, label, required={"type"})
         else:
             raise ProviderError("thread status is unknown")
+        return status_type
 
     @staticmethod
     def _validate_usage(raw: dict[str, Any]) -> dict[str, int]:

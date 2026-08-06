@@ -53,11 +53,20 @@ def main() -> None:
         or any(
             phrase in step
             for phrase in (
-                "keep may_retry",
-                "leave may_retry",
-                "preserve may_retry",
                 "may_retry(attempt) unchanged",
                 "may_retry unchanged",
+                "may_retry's signature and logic unchanged",
+            )
+        )
+        and not any(
+            contradiction in step
+            for contradiction in (
+                "edit its logic",
+                "change its logic",
+                "logic to always",
+                "always return",
+                "rewrite may_retry",
+                "modify may_retry",
             )
         )
         for step in step_texts

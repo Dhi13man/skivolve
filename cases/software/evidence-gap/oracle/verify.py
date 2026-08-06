@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 import sys
 
 
@@ -17,6 +18,27 @@ from final_output import (  # noqa: E402
 
 EXPECTED_KEYS = {"decision", "supported_facts", "unknowns", "next_check"}
 ALLOWED_SOURCES = {"decision_rule.txt", "pilot_primary.txt", "pilot_counter.txt"}
+SOURCE_CLAIM_PATTERNS = {
+    "decision_rule.txt": (
+        r"adoption requires (?:evidence (?:for|on) the exact release candidate under "
+        r"(?:the|a) production-shaped workload, including p99 latency|exact-candidate "
+        r"production-shaped p99 evidence); median-only evidence is insufficient",
+    ),
+    "pilot_primary.txt": (
+        r"(?:quartz prototype )?q-17 reduced median latency by 18% on a 50-request "
+        r"(?:synthetic )?sample(?:(?:, but|\.) tail latency was not measured"
+        r"(?: for q-17)?)?",
+        r"tail latency was not measured for q-17",
+    ),
+    "pilot_counter.txt": (
+        r"an earlier (?:quartz )?build increased p99(?: latency)? by 9%"
+        r"(?: on a bursty workload)?(?:(?:;|,) (?:but )?(?:the (?:note|source) does "
+        r"not establish (?:whether|that) (?:(?:that|this) (?:earlier )?build|it) "
+        r"matches (?:release candidate )?q-17|(?:and )?its identity relative to q-17 "
+        r"is unknown))?",
+        r"the evidence does not establish whether that earlier build matches q-17",
+    ),
+}
 
 
 def main() -> None:
@@ -52,83 +74,9 @@ def main() -> None:
     attributed_facts = all(
         claim
         and source in ALLOWED_SOURCES
-        and not any(
-            phrase in claim
-            for phrase in (
-                "this proves",
-                "safe for",
-                "every production workload",
-                "all production workloads",
-                "guarantees",
-                "production-ready",
-                "universally safe",
-            )
-        )
-        and (
-            (
-                source == "decision_rule.txt"
-                and not any(token in claim for token in ("18%", "9%", "q-17"))
-                and not any(
-                    phrase in claim
-                    for phrase in (
-                        "does not require",
-                        "not required",
-                        "requires no",
-                        "must not include",
-                        "without production",
-                        "without p99",
-                        "exclude p99",
-                        "omit p99",
-                    )
-                )
-                and (
-                    "production" not in claim
-                    and "p99" not in claim
-                    or (
-                        "production" in claim
-                        and "p99" in claim
-                        and any(
-                            phrase in claim
-                            for phrase in (
-                                "requires evidence",
-                                "requires exact-candidate",
-                                "p99 evidence is required",
-                                "must include p99",
-                            )
-                        )
-                    )
-                )
-                and (
-                    "median" not in claim
-                    or any(
-                        phrase in claim for phrase in ("insufficient", "not sufficient")
-                    )
-                )
-                and (("production" in claim and "p99" in claim) or "median" in claim)
-            )
-            or (
-                source == "pilot_primary.txt"
-                and not any(token in claim for token in ("9%", "earlier", "bursty"))
-                and ("18%" not in claim or ("median" in claim and "reduc" in claim))
-                and (
-                    ("18%" in claim and "median" in claim and "reduc" in claim)
-                    or ("tail" in claim and "not measured" in claim)
-                )
-            )
-            or (
-                source == "pilot_counter.txt"
-                and not any(token in claim for token in ("18%", "50-request", "median"))
-                and ("9%" not in claim or ("p99" in claim and "increas" in claim))
-                and (
-                    ("9%" in claim and "p99" in claim and "increas" in claim)
-                    or (
-                        any(token in claim for token in ("earlier", "build"))
-                        and any(
-                            token in claim for token in ("match", "identity", "q-17")
-                        )
-                    )
-                )
-            )
+        and any(
+            re.fullmatch(pattern, claim.rstrip(". "))
+            for pattern in SOURCE_CLAIM_PATTERNS[source]
         )
         for source, claim in fact_claims
     )

@@ -42,6 +42,10 @@ def main() -> None:
                 "serialization keep v3",
             )
         )
+        and not any(
+            negation in alternative
+            for negation in (" not ", "do not", "don't", "never")
+        )
         for alternative in alternatives
     ]
     authorizes_legacy = [
@@ -49,6 +53,10 @@ def main() -> None:
         and any(
             word in alternative
             for word in ("authorize", "emit", "switch", "changing", "change ")
+        )
+        and not any(
+            negation in alternative
+            for negation in (" not ", "do not", "don't", "never")
         )
         for alternative in alternatives
     ]

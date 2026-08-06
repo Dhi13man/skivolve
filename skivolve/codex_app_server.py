@@ -1261,7 +1261,9 @@ class _AppServerProtocol:
         self._active_collab_thread_ids: set[str] = set()
         self._seen_collab_turn_ids: set[tuple[str, str]] = set()
         self._collab_turn_usage: dict[tuple[str, str], dict[str, int]] = {}
-        self._pending_spawn_items: dict[tuple[str, str], str | None] = {}
+        self._pending_spawn_items: dict[
+            tuple[str, str], tuple[str | None, str | None]
+        ] = {}
         self._terminal_collab_history: dict[
             tuple[str, str],
             tuple[
@@ -1989,11 +1991,11 @@ class _AppServerProtocol:
                     )
                 if not (
                     any(
-                        sender == parent_id and receiver in {None, announced}
+                        sender == parent_id and pending[0] in {None, announced}
                         for (
                             sender,
                             _item_id,
-                        ), receiver in self._pending_spawn_items.items()
+                        ), pending in self._pending_spawn_items.items()
                     )
                     or any(
                         spawn_tool == "spawnAgent"
@@ -2075,6 +2077,15 @@ class _AppServerProtocol:
             main_turn = self._matches_turn(params)
             if not main_turn and not self._matches_collab_turn(params):
                 raise ProviderError("Codex item completion targeted an unknown turn")
+            if (
+                _optional_bounded_integer(
+                    params.get("completedAtMs"),
+                    "item/completed.completedAtMs",
+                    minimum=-(2**63),
+                )
+                is None
+            ):
+                raise ProviderError("item/completed.completedAtMs is required")
             item = _require_object(params.get("item"), "item/completed.item")
             self._validate_item(
                 item,
@@ -2106,6 +2117,15 @@ class _AppServerProtocol:
         if method == "item/started":
             if not self._matches_turn(params) and not self._matches_collab_turn(params):
                 raise ProviderError("Codex item start targeted an unknown turn")
+            if (
+                _optional_bounded_integer(
+                    params.get("startedAtMs"),
+                    "item/started.startedAtMs",
+                    minimum=-(2**63),
+                )
+                is None
+            ):
+                raise ProviderError("item/started.startedAtMs is required")
             self._validate_item(
                 _require_object(params.get("item"), "item/started.item"),
                 owner_thread_id=_require_protocol_id(
@@ -2370,15 +2390,22 @@ class _AppServerProtocol:
                 raise ProviderError("spawnAgent must have at most one receiver")
             pending_key = (sender, item_id)
             pending = pending_key in self._pending_spawn_items
-            expected_receiver = self._pending_spawn_items.get(pending_key)
+            expected_receiver, expected_prompt = self._pending_spawn_items.get(
+                pending_key, (None, None)
+            )
             if status == "inProgress" and pending:
                 raise ProviderError("spawnAgent item was already in progress")
+            if lifecycle == "completed" and pending and prompt != expected_prompt:
+                raise ProviderError(
+                    "terminal spawnAgent prompt disagreed with its start"
+                )
             if expected_receiver is not None and receivers != [expected_receiver]:
                 raise ProviderError(
                     "spawnAgent receiver did not match its pending child thread"
                 )
             unbound_slots = sum(
-                receiver is None for receiver in self._pending_spawn_items.values()
+                receiver is None
+                for receiver, _prompt in self._pending_spawn_items.values()
             )
             receiver = receivers[0] if receivers else None
             failed_reservation = None
@@ -2446,7 +2473,7 @@ class _AppServerProtocol:
                     raise ProviderError("spawnAgent receiver was already claimed")
                 if len(self._pending_spawn_items) >= _MAX_COLLAB_THREADS:
                     raise ProviderError("pending spawn count exceeds the limit")
-                self._pending_spawn_items[pending_key] = receiver
+                self._pending_spawn_items[pending_key] = (receiver, prompt)
             else:
                 self._pending_spawn_items.pop(pending_key, None)
             if lifecycle == "snapshot":
@@ -2478,7 +2505,16 @@ class _AppServerProtocol:
                 ):
                     continue
                 if agent_status in {"pendingInit", "running"}:
-                    self._active_collab_thread_ids.add(thread_id)
+                    child_has_completed_turn = any(
+                        seen_thread_id == thread_id
+                        for seen_thread_id, _turn_id in self._seen_collab_turn_ids
+                    ) and not self._collab_turn_ids.get(thread_id)
+                    if not (
+                        tool == "spawnAgent"
+                        and lifecycle == "completed"
+                        and child_has_completed_turn
+                    ):
+                        self._active_collab_thread_ids.add(thread_id)
                 else:
                     self._active_collab_thread_ids.discard(thread_id)
             if (
@@ -2555,7 +2591,7 @@ class _AppServerProtocol:
         if thread_id in self._collab_thread_ids:
             return True
         open_spawn_slots = sum(
-            receiver is None for receiver in self._pending_spawn_items.values()
+            receiver is None for receiver, _prompt in self._pending_spawn_items.values()
         )
         if len(self._unbound_collab_thread_ids) >= open_spawn_slots:
             return False
@@ -2715,19 +2751,30 @@ class _AppServerProtocol:
                     raise ProviderError(
                         "Codex summary turn must contain one agent message"
                     )
+                summary_index = next(
+                    (
+                        index
+                        for index in range(len(self._completed_messages) - 1, -1, -1)
+                        if str(self._completed_messages[index]["text"]).strip()
+                    ),
+                    None,
+                )
+                if summary_index is None:
+                    summary_index = len(self._completed_messages) - 1
                 if (
-                    not self._completed_messages
-                    or messages[0] != self._completed_messages[-1]
+                    summary_index < 0
+                    or messages[0] != self._completed_messages[summary_index]
                 ):
                     raise ProviderError(
                         "Codex summary message disagrees with its completion event"
                     )
-                messages = list(self._completed_messages)
+                messages = self._completed_messages[: summary_index + 1]
         else:
             raise ProviderError("Codex turn returned an unsupported item view")
         if not messages or not self._completed_messages:
             raise ProviderError("Codex turn omitted a completed final agent message")
-        message_ids = [message["id"] for message in messages]
+        id_source = self._completed_messages if items_view == "summary" else messages
+        message_ids = [message["id"] for message in id_source]
         if len(set(message_ids)) != len(message_ids):
             raise ProviderError("Codex turn repeated an agent-message id")
         if items_view == "full" and messages != self._completed_messages:

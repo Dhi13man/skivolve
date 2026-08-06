@@ -602,9 +602,18 @@ class ScriptedTransport:
         if self.turn_items_view == "summary":
             turn_items = [
                 next(
-                    item
-                    for item in reversed(full_items)
-                    if isinstance(item, dict) and item.get("type") == "agentMessage"
+                    (
+                        item
+                        for item in reversed(full_items)
+                        if isinstance(item, dict)
+                        and item.get("type") == "agentMessage"
+                        and str(item.get("text", "")).strip()
+                    ),
+                    next(
+                        item
+                        for item in reversed(full_items)
+                        if isinstance(item, dict) and item.get("type") == "agentMessage"
+                    ),
                 )
             ]
         elif self.turn_items_view == "full" or self.not_loaded_has_items:
@@ -808,6 +817,7 @@ class CodexProtocolTests(unittest.TestCase):
                                         "tool": "spawnAgent",
                                         "type": "collabAgentToolCall",
                                     },
+                                    "startedAtMs": 1,
                                     "threadId": self.thread_id,
                                     "turnId": self.turn_id,
                                 },
@@ -1049,7 +1059,10 @@ class CodexProtocolTests(unittest.TestCase):
             protocol._thread_id = "main-thread"
             protocol._turn_id = "main-turn"
             if state == "pending-spawn":
-                protocol._pending_spawn_items[("main-thread", "spawn-1")] = None
+                protocol._pending_spawn_items[("main-thread", "spawn-1")] = (
+                    None,
+                    None,
+                )
             elif state == "bound-thread":
                 protocol._collab_thread_ids.add("child-1")
             elif state == "awaiting-turn":
@@ -1098,6 +1111,7 @@ class CodexProtocolTests(unittest.TestCase):
                     "item/started",
                     {
                         "item": resume,
+                        "startedAtMs": 1,
                         "threadId": "main-thread",
                         "turnId": "main-turn",
                     },
@@ -1107,6 +1121,7 @@ class CodexProtocolTests(unittest.TestCase):
                         "item/completed",
                         {
                             "item": {**resume, "status": "completed"},
+                            "completedAtMs": 2,
                             "threadId": "main-thread",
                             "turnId": "main-turn",
                         },
@@ -1143,14 +1158,18 @@ class CodexProtocolTests(unittest.TestCase):
             protocol._validate_item(completed_resume, lifecycle="snapshot")
         with self.assertRaisesRegex(ProviderError, "completed without a start"):
             protocol._handle_notification(
-                "item/completed", {**envelope, "item": completed_resume}
+                "item/completed",
+                {**envelope, "completedAtMs": 2, "item": completed_resume},
             )
-        protocol._handle_notification("item/started", {**envelope, "item": resume})
+        protocol._handle_notification(
+            "item/started", {**envelope, "item": resume, "startedAtMs": 1}
+        )
         with self.assertRaisesRegex(ProviderError, "disagreed with its start"):
             protocol._handle_notification(
                 "item/completed",
                 {
                     **envelope,
+                    "completedAtMs": 2,
                     "item": {
                         **resume,
                         "status": "completed",
@@ -1162,6 +1181,7 @@ class CodexProtocolTests(unittest.TestCase):
             "item/completed",
             {
                 **envelope,
+                "completedAtMs": 2,
                 "item": {
                     **resume,
                     "agentsStates": {"child-1": {"status": "completed"}},
@@ -1307,6 +1327,23 @@ class CodexProtocolTests(unittest.TestCase):
 
                 self.assertEqual(outcome.final_output, "completed fixture")
                 self.assertEqual(outcome.raw_response["turn"]["items_view"], items_view)
+
+    def test_summary_uses_the_last_nonblank_completed_agent_message(self) -> None:
+        outcome = _protocol(
+            ScriptedTransport(
+                Path("/runtime/work"),
+                additional_item_completed={
+                    "id": "message-2",
+                    "phase": None,
+                    "text": "  ",
+                    "type": "agentMessage",
+                },
+                turn_items_view="summary",
+            )
+        ).run("request", time.monotonic() + 5)
+
+        self.assertEqual(outcome.final_output, "completed fixture")
+        self.assertEqual(outcome.raw_response["turn"]["items_view"], "summary")
 
     def test_full_turn_rejects_non_object_items(self) -> None:
         transport = ScriptedTransport(
@@ -1499,6 +1536,7 @@ class CodexProtocolTests(unittest.TestCase):
             notification_protocol._handle_notification(
                 "item/completed",
                 {
+                    "completedAtMs": 1,
                     "item": {"id": "item-1", "type": secret},
                     "threadId": "thread-1",
                     "turnId": "turn-1",
@@ -1595,6 +1633,7 @@ class CodexProtocolTests(unittest.TestCase):
                     "item/started",
                     {
                         "item": item,
+                        "startedAtMs": 1,
                         "threadId": "thread-1",
                         "turnId": "turn-1",
                     },
@@ -1638,6 +1677,7 @@ class CodexProtocolTests(unittest.TestCase):
                         "item/started",
                         {
                             "item": {"id": "item-1", "type": item_type},
+                            "startedAtMs": 1,
                             "threadId": "thread-1",
                             "turnId": "turn-1",
                         },
@@ -1661,11 +1701,18 @@ class CodexProtocolTests(unittest.TestCase):
             "tool": "spawnAgent",
             "type": "collabAgentToolCall",
         }
-        protocol._handle_notification("item/started", {**envelope, "item": initial})
+        protocol._handle_notification(
+            "item/started", {**envelope, "item": initial, "startedAtMs": 1}
+        )
         self.assertEqual(protocol._collab_thread_ids, set())
-        self.assertEqual(protocol._pending_spawn_items, {("thread-1", "item-1"): None})
+        self.assertEqual(
+            protocol._pending_spawn_items,
+            {("thread-1", "item-1"): (None, "delegated task")},
+        )
         with self.assertRaisesRegex(ProviderError, "already in progress"):
-            protocol._handle_notification("item/started", {**envelope, "item": initial})
+            protocol._handle_notification(
+                "item/started", {**envelope, "item": initial, "startedAtMs": 1}
+            )
 
         completed = {
             **initial,
@@ -1675,10 +1722,126 @@ class CodexProtocolTests(unittest.TestCase):
             "receiverThreadIds": ["child-1"],
             "status": "completed",
         }
-        protocol._handle_notification("item/completed", {**envelope, "item": completed})
+        protocol._handle_notification(
+            "item/completed", {**envelope, "completedAtMs": 2, "item": completed}
+        )
         self.assertEqual(protocol._collab_thread_ids, {"child-1"})
         self.assertEqual(protocol._collab_parent_ids, {"child-1": "thread-1"})
         self.assertEqual(protocol._pending_spawn_items, {})
+
+    def test_item_lifecycle_requires_pinned_timestamp_fields(self) -> None:
+        item = {
+            "id": "message-1",
+            "phase": "final_answer",
+            "text": "result",
+            "type": "agentMessage",
+        }
+        for method, field in (
+            ("item/started", "startedAtMs"),
+            ("item/completed", "completedAtMs"),
+        ):
+            for value, expected in ((None, "required"), (True, "supported range")):
+                protocol = _protocol(QueueTransport([]))
+                protocol._thread_id = "thread-1"
+                protocol._turn_id = "turn-1"
+                params = {
+                    "item": item,
+                    "threadId": "thread-1",
+                    "turnId": "turn-1",
+                }
+                if value is not None:
+                    params[field] = value
+                with (
+                    self.subTest(method=method, value=value),
+                    self.assertRaisesRegex(ProviderError, expected),
+                ):
+                    protocol._handle_notification(method, params)
+
+    def test_spawn_completion_prompt_must_match_its_start(self) -> None:
+        protocol = _protocol(QueueTransport([]))
+        protocol._thread_id = "thread-1"
+        protocol._turn_id = "turn-1"
+        initial = {
+            "agentsStates": {},
+            "id": "item-1",
+            "model": "",
+            "prompt": "original task",
+            "reasoningEffort": "medium",
+            "receiverThreadIds": [],
+            "senderThreadId": "thread-1",
+            "status": "inProgress",
+            "tool": "spawnAgent",
+            "type": "collabAgentToolCall",
+        }
+        envelope = {"threadId": "thread-1", "turnId": "turn-1"}
+        protocol._handle_notification(
+            "item/started", {**envelope, "item": initial, "startedAtMs": 1}
+        )
+
+        with self.assertRaisesRegex(ProviderError, "prompt disagreed"):
+            protocol._handle_notification(
+                "item/completed",
+                {
+                    **envelope,
+                    "completedAtMs": 2,
+                    "item": {
+                        **initial,
+                        "agentsStates": {"child-1": {"status": "running"}},
+                        "model": "gpt-5.6-luna",
+                        "prompt": "changed task",
+                        "reasoningEffort": "low",
+                        "receiverThreadIds": ["child-1"],
+                        "status": "completed",
+                    },
+                },
+            )
+
+        self.assertEqual(
+            protocol._pending_spawn_items,
+            {("thread-1", "item-1"): (None, "original task")},
+        )
+
+    def test_stale_spawn_completion_does_not_reactivate_completed_child(self) -> None:
+        protocol = _protocol(QueueTransport([]))
+        protocol._thread_id = "thread-1"
+        protocol._turn_id = "turn-1"
+        initial = {
+            "agentsStates": {},
+            "id": "item-1",
+            "model": "",
+            "prompt": "delegated task",
+            "reasoningEffort": "medium",
+            "receiverThreadIds": [],
+            "senderThreadId": "thread-1",
+            "status": "inProgress",
+            "tool": "spawnAgent",
+            "type": "collabAgentToolCall",
+        }
+        envelope = {"threadId": "thread-1", "turnId": "turn-1"}
+        protocol._handle_notification(
+            "item/started", {**envelope, "item": initial, "startedAtMs": 1}
+        )
+        protocol._collab_thread_ids.add("child-1")
+        protocol._unbound_collab_thread_ids.add("child-1")
+        protocol._seen_collab_turn_ids.add(("child-1", "child-turn"))
+
+        protocol._handle_notification(
+            "item/completed",
+            {
+                **envelope,
+                "completedAtMs": 2,
+                "item": {
+                    **initial,
+                    "agentsStates": {"child-1": {"status": "running"}},
+                    "model": "gpt-5.6-luna",
+                    "reasoningEffort": "low",
+                    "receiverThreadIds": ["child-1"],
+                    "status": "completed",
+                },
+            },
+        )
+
+        self.assertNotIn("child-1", protocol._active_collab_thread_ids)
 
     def test_spawn_start_rejects_an_explicit_receiver(self) -> None:
         protocol = _protocol(QueueTransport([]))
@@ -1700,7 +1863,12 @@ class CodexProtocolTests(unittest.TestCase):
         with self.assertRaisesRegex(ProviderError, "must not have receivers"):
             protocol._handle_notification(
                 "item/started",
-                {"item": item, "threadId": "thread-1", "turnId": "turn-1"},
+                {
+                    "item": item,
+                    "startedAtMs": 1,
+                    "threadId": "thread-1",
+                    "turnId": "turn-1",
+                },
             )
         self.assertEqual(protocol._pending_spawn_items, {})
 
@@ -1734,7 +1902,10 @@ class CodexProtocolTests(unittest.TestCase):
         protocol = _protocol(QueueTransport([]))
         protocol._thread_id = "thread-1"
         protocol._collab_thread_ids.add("child-1")
-        protocol._pending_spawn_items[("thread-1", "item-1")] = "child-1"
+        protocol._pending_spawn_items[("thread-1", "item-1")] = (
+            "child-1",
+            None,
+        )
 
         with self.assertRaisesRegex(ProviderError, "live terminal history"):
             protocol._validate_item(
@@ -1752,7 +1923,8 @@ class CodexProtocolTests(unittest.TestCase):
             )
 
         self.assertEqual(
-            protocol._pending_spawn_items, {("thread-1", "item-1"): "child-1"}
+            protocol._pending_spawn_items,
+            {("thread-1", "item-1"): ("child-1", None)},
         )
         self.assertEqual(protocol._collab_thread_ids, {"child-1"})
 
@@ -1832,7 +2004,8 @@ class CodexProtocolTests(unittest.TestCase):
                         }
                     )
                 self.assertEqual(
-                    protocol._pending_spawn_items, {("thread-1", "item-1"): None}
+                    protocol._pending_spawn_items,
+                    {("thread-1", "item-1"): (None, None)},
                 )
                 self.assertEqual(protocol._collab_thread_ids, set())
 
@@ -1863,7 +2036,7 @@ class CodexProtocolTests(unittest.TestCase):
                         }
                     )
                 expected_pending = (
-                    {("thread-1", "item-1"): None} if status == "failed" else {}
+                    {("thread-1", "item-1"): (None, None)} if status == "failed" else {}
                 )
                 self.assertEqual(protocol._pending_spawn_items, expected_pending)
                 self.assertEqual(protocol._collab_thread_ids, set())
@@ -1894,6 +2067,7 @@ class CodexProtocolTests(unittest.TestCase):
                     protocol._handle_notification(
                         "item/completed",
                         {
+                            "completedAtMs": 2,
                             "item": item,
                             "threadId": "thread-1",
                             "turnId": "turn-1",
@@ -1920,13 +2094,22 @@ class CodexProtocolTests(unittest.TestCase):
             "type": "collabAgentToolCall",
         }
         envelope = {"threadId": "thread-1", "turnId": "turn-1"}
-        protocol._handle_notification("item/started", {**envelope, "item": item})
         protocol._handle_notification(
-            "item/completed", {**envelope, "item": {**item, "status": "failed"}}
+            "item/started", {**envelope, "item": item, "startedAtMs": 1}
+        )
+        protocol._handle_notification(
+            "item/completed",
+            {
+                **envelope,
+                "completedAtMs": 2,
+                "item": {**item, "status": "failed"},
+            },
         )
 
         with self.assertRaisesRegex(ProviderError, "reused after termination"):
-            protocol._handle_notification("item/started", {**envelope, "item": item})
+            protocol._handle_notification(
+                "item/started", {**envelope, "item": item, "startedAtMs": 1}
+            )
         protocol._validate_item({**item, "status": "failed"}, lifecycle="snapshot")
 
     def test_spawn_agent_bounds_total_child_thread_scope(self) -> None:
@@ -1977,7 +2160,7 @@ class CodexProtocolTests(unittest.TestCase):
         self.assertEqual(protocol._collab_thread_ids, set(receivers))
         self.assertEqual(
             protocol._pending_spawn_items,
-            {("thread-1", "pending-overflow"): None},
+            {("thread-1", "pending-overflow"): (None, None)},
         )
 
     def test_pending_spawn_bounds_early_child_status_scope(self) -> None:
@@ -2002,7 +2185,9 @@ class CodexProtocolTests(unittest.TestCase):
             },
         )
         self.assertEqual(protocol._collab_thread_ids, {"child-1"})
-        self.assertEqual(protocol._pending_spawn_items, {("thread-1", "item-1"): None})
+        self.assertEqual(
+            protocol._pending_spawn_items, {("thread-1", "item-1"): (None, None)}
+        )
         self.assertEqual(protocol._unbound_collab_thread_ids, {"child-1"})
 
         protocol._turn_id = "main-turn"
@@ -2020,6 +2205,7 @@ class CodexProtocolTests(unittest.TestCase):
             "item/started",
             {
                 "item": {"id": "reasoning-1", "type": "reasoning"},
+                "startedAtMs": 1,
                 "threadId": "child-1",
                 "turnId": "child-turn",
             },
@@ -2031,6 +2217,7 @@ class CodexProtocolTests(unittest.TestCase):
         protocol._handle_notification(
             "item/completed",
             {
+                "completedAtMs": 2,
                 "item": {
                     "id": "message-1",
                     "phase": "final_answer",
@@ -2481,7 +2668,8 @@ class CodexProtocolTests(unittest.TestCase):
             }
         )
         self.assertEqual(
-            protocol._pending_spawn_items, {("main-thread", "same-id"): None}
+            protocol._pending_spawn_items,
+            {("main-thread", "same-id"): (None, None)},
         )
         protocol._validate_item(
             {
@@ -2541,7 +2729,8 @@ class CodexProtocolTests(unittest.TestCase):
         with self.assertRaisesRegex(ProviderError, "already claimed"):
             protocol._validate_item({**completed, "id": "spawn-2"})
         self.assertEqual(
-            protocol._pending_spawn_items, {("main-thread", "spawn-2"): None}
+            protocol._pending_spawn_items,
+            {("main-thread", "spawn-2"): (None, None)},
         )
 
     def test_collaboration_optional_metadata_rejects_non_strings(self) -> None:
@@ -2603,7 +2792,9 @@ class CodexProtocolTests(unittest.TestCase):
                 "reasoningEffort": "low",
             }
         )
-        self.assertEqual(protocol._pending_spawn_items, {("thread-1", "item-1"): None})
+        self.assertEqual(
+            protocol._pending_spawn_items, {("thread-1", "item-1"): (None, None)}
+        )
 
     def test_collaboration_sender_and_lifecycle_match_event_envelope(self) -> None:
         protocol = _protocol(QueueTransport([]))
@@ -2626,6 +2817,7 @@ class CodexProtocolTests(unittest.TestCase):
                 "item/started",
                 {
                     "item": item,
+                    "startedAtMs": 1,
                     "threadId": "child-1",
                     "turnId": "child-turn",
                 },
@@ -2636,6 +2828,7 @@ class CodexProtocolTests(unittest.TestCase):
             protocol._handle_notification(
                 "item/completed",
                 {
+                    "completedAtMs": 2,
                     "item": item,
                     "threadId": "main-thread",
                     "turnId": "main-turn",
@@ -2654,6 +2847,7 @@ class CodexProtocolTests(unittest.TestCase):
             protocol._handle_notification(
                 "item/completed",
                 {
+                    "completedAtMs": 2,
                     "item": {"type": "agentMessage"},
                     "threadId": "child-1",
                     "turnId": "child-turn",
@@ -2711,6 +2905,7 @@ class CodexProtocolTests(unittest.TestCase):
             protocol._handle_notification(
                 "item/completed",
                 {
+                    "completedAtMs": 2,
                     "item": {
                         "id": "message-1",
                         "text": "late",

@@ -1261,6 +1261,7 @@ class _AppServerProtocol:
         self._seen_collab_turn_ids: set[tuple[str, str]] = set()
         self._collab_turn_usage: dict[tuple[str, str], dict[str, int]] = {}
         self._pending_spawn_items: dict[tuple[str, str], str | None] = {}
+        self._completed_spawn_receivers: dict[tuple[str, str], str] = {}
         self._terminal_collab_item_ids: set[tuple[str, str]] = set()
         self._unbound_collab_thread_ids: set[str] = set()
         self._retained_text_bytes = 0
@@ -1838,6 +1839,7 @@ class _AppServerProtocol:
                     spawn.get("parent_thread_id"),
                     "child thread.source parent thread id",
                 )
+                bound_parent_id = self._collab_parent_ids.get(announced)
                 depth = _optional_bounded_integer(
                     spawn.get("depth"),
                     "child thread.source depth",
@@ -1861,6 +1863,9 @@ class _AppServerProtocol:
                     or self._session_id is None
                     or session_id != self._session_id
                     or parent_id != source_parent_id
+                    or (
+                        bound_parent_id is not None and bound_parent_id != parent_id
+                    )
                     or (
                         parent_id != self._thread_id
                         and parent_id not in self._validated_collab_thread_ids
@@ -2198,6 +2203,24 @@ class _AppServerProtocol:
             )
             receiver = receivers[0] if receivers else None
             if (
+                lifecycle == "snapshot"
+                and status == "completed"
+                and (
+                    self._completed_spawn_receivers.get(item_scope) != receiver
+                    or receiver not in self._collab_thread_ids
+                )
+            ):
+                raise ProviderError(
+                    "completed spawnAgent snapshot lacked a matching live completion"
+                )
+            if lifecycle != "snapshot" and status != "failed":
+                for claimed_receiver in receivers:
+                    parent_id = self._collab_parent_ids.get(claimed_receiver)
+                    if parent_id is not None and parent_id != sender:
+                        raise ProviderError(
+                            "spawnAgent receiver parent disagrees with its spawning sender"
+                        )
+            if (
                 status == "failed"
                 and receiver is not None
                 and (
@@ -2256,7 +2279,10 @@ class _AppServerProtocol:
                     self._unbound_collab_thread_ids.discard(failed_receiver)
                     self._collab_thread_ids.discard(failed_receiver)
                     self._active_collab_thread_ids.discard(failed_receiver)
+                    self._collab_parent_ids.pop(failed_receiver, None)
             else:
+                for claimed_receiver in receivers:
+                    self._collab_parent_ids[claimed_receiver] = sender
                 self._collab_thread_ids.update(receivers)
         elif any(
             receiver != self._thread_id and receiver not in self._collab_thread_ids
@@ -2280,6 +2306,8 @@ class _AppServerProtocol:
                     "terminal collaboration item count exceeds the limit"
                 )
             self._terminal_collab_item_ids.add(item_scope)
+            if tool == "spawnAgent" and status == "completed":
+                self._completed_spawn_receivers[item_scope] = receivers[0]
 
     def _validate_completed_turn(
         self, turn: dict[str, Any], owner_thread_id: str
@@ -2340,6 +2368,7 @@ class _AppServerProtocol:
             raise ProviderError(
                 "spawnAgent receiver parent disagrees with its spawning sender"
             )
+        self._collab_parent_ids[thread_id] = sender
         self._unbound_collab_thread_ids.remove(thread_id)
 
     def _matches_collab_turn(self, params: dict[str, Any]) -> bool:

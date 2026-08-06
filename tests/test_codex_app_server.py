@@ -1549,6 +1549,7 @@ class CodexProtocolTests(unittest.TestCase):
 
         self.assertEqual(protocol._pending_spawn_items, {})
         self.assertEqual(protocol._collab_thread_ids, set())
+        self.assertEqual(protocol._collab_parent_ids, {})
 
     def test_spawn_snapshot_does_not_mutate_live_scope(self) -> None:
         protocol = _protocol(QueueTransport([]))
@@ -1574,6 +1575,44 @@ class CodexProtocolTests(unittest.TestCase):
             protocol._pending_spawn_items, {("thread-1", "item-1"): "child-1"}
         )
         self.assertEqual(protocol._collab_thread_ids, {"child-1"})
+
+    def test_completed_spawn_snapshot_requires_matching_live_completion(self) -> None:
+        protocol = _protocol(QueueTransport([]))
+        protocol._thread_id = "thread-1"
+        initial = {
+            "agentsStates": {},
+            "id": "item-1",
+            "receiverThreadIds": [],
+            "senderThreadId": "thread-1",
+            "status": "inProgress",
+            "tool": "spawnAgent",
+            "type": "collabAgentToolCall",
+        }
+        completed = {
+            **initial,
+            "agentsStates": {"child-1": {"status": "running"}},
+            "receiverThreadIds": ["child-1"],
+            "status": "completed",
+        }
+
+        with self.assertRaisesRegex(ProviderError, "matching live completion"):
+            protocol._validate_item(completed, lifecycle="snapshot")
+        protocol._validate_item(initial)
+        protocol._validate_item(completed)
+        live_scope = (
+            dict(protocol._completed_spawn_receivers),
+            set(protocol._collab_thread_ids),
+            dict(protocol._collab_parent_ids),
+        )
+        protocol._validate_item(completed, lifecycle="snapshot")
+        self.assertEqual(
+            live_scope,
+            (
+                protocol._completed_spawn_receivers,
+                protocol._collab_thread_ids,
+                protocol._collab_parent_ids,
+            ),
+        )
 
     def test_completed_spawn_requires_exactly_one_receiver(self) -> None:
         initial = {
@@ -1664,7 +1703,8 @@ class CodexProtocolTests(unittest.TestCase):
                         },
                     )
 
-        protocol._validate_item(item, lifecycle="snapshot")
+        with self.assertRaisesRegex(ProviderError, "matching live completion"):
+            protocol._validate_item(item, lifecycle="snapshot")
 
     def test_terminal_collaboration_item_id_cannot_restart(self) -> None:
         protocol = _protocol(QueueTransport([]))
@@ -1949,6 +1989,48 @@ class CodexProtocolTests(unittest.TestCase):
                     "status": "completed",
                 }
             )
+
+    def test_child_thread_parent_matches_preannouncement_spawn_binding(self) -> None:
+        protocol = _protocol(QueueTransport([]))
+        protocol._thread_id = "thread-1"
+        protocol._session_id = "session-1"
+        root_spawn = {
+            "agentsStates": {},
+            "id": "spawn-root",
+            "receiverThreadIds": [],
+            "senderThreadId": "thread-1",
+            "status": "inProgress",
+            "tool": "spawnAgent",
+            "type": "collabAgentToolCall",
+        }
+        protocol._validate_item(root_spawn)
+        protocol._validate_item(
+            {
+                **root_spawn,
+                "agentsStates": {"child-1": {"status": "running"}},
+                "receiverThreadIds": ["child-1"],
+                "status": "completed",
+            }
+        )
+        protocol._collab_thread_ids.add("child-a")
+        protocol._validated_collab_thread_ids.add("child-a")
+        protocol._validate_item(
+            {
+                **root_spawn,
+                "id": "spawn-child",
+                "senderThreadId": "child-a",
+            }
+        )
+        thread = _child_thread()
+        thread["parentThreadId"] = "child-a"
+        thread["source"]["subAgent"]["thread_spawn"][
+            "parent_thread_id"
+        ] = "child-a"
+
+        with self.assertRaisesRegex(ProviderError, "provenance"):
+            protocol._handle_notification("thread/started", {"thread": thread})
+        self.assertEqual(protocol._collab_parent_ids["child-1"], "thread-1")
+        self.assertNotIn("child-1", protocol._validated_collab_thread_ids)
 
     def test_parallel_pending_spawns_accept_cross_ordered_child_announcements(
         self,

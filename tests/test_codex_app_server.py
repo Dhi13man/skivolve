@@ -764,19 +764,15 @@ class CodexProtocolTests(unittest.TestCase):
         protocol._thread_id = "thread-1"
         protocol._turn_id = "turn-1"
         valid = {
-            "error": {
-                "additionalDetails": None,
-                "codexErrorInfo": None,
-                "message": "untrusted",
-            },
+            "error": {"message": "untrusted"},
             "threadId": "thread-1",
             "turnId": "turn-1",
             "willRetry": True,
         }
         invalid = {
-            "missing error field": {
+            "missing message": {
                 **valid,
-                "error": {"codexErrorInfo": None, "message": "untrusted"},
+                "error": {"codexErrorInfo": None},
             },
             "invalid message": {
                 **valid,
@@ -786,6 +782,7 @@ class CodexProtocolTests(unittest.TestCase):
             "wrong turn": {**valid, "turnId": "turn-2"},
         }
 
+        protocol._handle_notification("error", valid)
         for label, params in invalid.items():
             with self.subTest(label=label):
                 with self.assertRaises(ProviderError):

@@ -1662,7 +1662,8 @@ class _AppServerProtocol:
             _require_exact_keys(
                 error,
                 "error notification.error",
-                required={"additionalDetails", "codexErrorInfo", "message"},
+                required={"message"},
+                optional={"additionalDetails", "codexErrorInfo"},
             )
             _require_string(error.get("message"), "error notification.error.message")
             main_turn = self._matches_turn(params)

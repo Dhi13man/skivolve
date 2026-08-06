@@ -999,6 +999,7 @@ class CodexProtocolTests(unittest.TestCase):
             "active-turn",
             "resumed-thread",
             "resumed-item",
+            "started-resume-item",
         ):
             protocol = _protocol(QueueTransport([]))
             protocol._thread_id = "main-thread"
@@ -1023,7 +1024,7 @@ class CodexProtocolTests(unittest.TestCase):
                         "threadId": "child-1",
                     },
                 )
-            else:
+            elif state == "resumed-item":
                 protocol._collab_thread_ids.add("child-1")
                 protocol._seen_collab_turn_ids.add(("child-1", "prior-turn"))
                 protocol._validate_item(
@@ -1037,6 +1038,25 @@ class CodexProtocolTests(unittest.TestCase):
                         "type": "collabAgentToolCall",
                     }
                 )
+            else:
+                protocol._collab_thread_ids.add("child-1")
+                protocol._seen_collab_turn_ids.add(("child-1", "prior-turn"))
+                protocol._handle_notification(
+                    "item/started",
+                    {
+                        "item": {
+                            "agentsStates": {},
+                            "id": "resume-1",
+                            "receiverThreadIds": ["child-1"],
+                            "senderThreadId": "main-thread",
+                            "status": "inProgress",
+                            "tool": "resumeAgent",
+                            "type": "collabAgentToolCall",
+                        },
+                        "threadId": "main-thread",
+                        "turnId": "main-turn",
+                    },
+                )
 
             with (
                 self.subTest(state=state),
@@ -1044,6 +1064,49 @@ class CodexProtocolTests(unittest.TestCase):
             ):
                 protocol._handle_notification("turn/completed", completed)
             self.assertIsNone(protocol._turn_completed)
+
+        protocol = _protocol(QueueTransport([]))
+        protocol._thread_id = "main-thread"
+        protocol._turn_id = "main-turn"
+        protocol._collab_thread_ids.add("child-1")
+        protocol._seen_collab_turn_ids.add(("child-1", "prior-turn"))
+        resume = {
+            "agentsStates": {},
+            "id": "resume-1",
+            "receiverThreadIds": ["child-1"],
+            "senderThreadId": "main-thread",
+            "status": "inProgress",
+            "tool": "resumeAgent",
+            "type": "collabAgentToolCall",
+        }
+        envelope = {"threadId": "main-thread", "turnId": "main-turn"}
+        protocol._handle_notification("item/started", {**envelope, "item": resume})
+        with self.assertRaisesRegex(ProviderError, "disagreed with its start"):
+            protocol._handle_notification(
+                "item/completed",
+                {
+                    **envelope,
+                    "item": {
+                        **resume,
+                        "status": "completed",
+                        "tool": "sendInput",
+                    },
+                },
+            )
+        protocol._handle_notification(
+            "item/completed",
+            {
+                **envelope,
+                "item": {
+                    **resume,
+                    "agentsStates": {"child-1": {"status": "completed"}},
+                    "status": "completed",
+                },
+            },
+        )
+        self.assertEqual(protocol._active_nonspawn_items, {})
+        protocol._handle_notification("turn/completed", completed)
+        self.assertIsNotNone(protocol._turn_completed)
 
         protocol = _protocol(QueueTransport([]))
         protocol._thread_id = "main-thread"

@@ -1,0 +1,1 @@
+{"evidence":["failure.log:2","worker.py:2"],"root_cause":"The condition treats attempts=0 as successful because >= 0 is true.","unverified":"The original check command and any broader test suite were not supplied.","verdict":"failed","verification":"python3 -m py_compile passed; runtime probes confirmed outcome(0) is 'ok', and the expected-contract assertion failed as logged."}

@@ -171,6 +171,7 @@ def main() -> None:
                     and item["source"] in ALLOWED_SOURCES
                 )
             )
+            and isinstance(item.get("claim", item.get("unknown")), str)
             and any(
                 re.fullmatch(
                     pattern,

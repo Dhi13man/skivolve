@@ -25,6 +25,7 @@ FAILURE_EVIDENCE_PATTERNS = (
     r"failure\.log:2 reports expected retry and observed ok for attempts=0",
 )
 WORKER_EVIDENCE_PATTERNS = (
+    r"worker\.py:2",
     r"worker\.py:2-3",
     r"worker\.py:2-3 routes every attempts >= 0, including 0, to ok",
     r"worker\.py:2-4 returns ok when attempts >= 0 and retry only otherwise",

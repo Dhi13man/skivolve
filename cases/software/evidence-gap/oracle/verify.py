@@ -109,7 +109,9 @@ def main() -> None:
         if isinstance(facts, list)
         and 2 <= len(facts) <= 6
         and all(
-            isinstance(item, dict) and set(item) == {"source", "claim"}
+            isinstance(item, dict)
+            and set(item) == {"source", "claim"}
+            and isinstance(item.get("claim"), str)
             for item in facts
         )
         else []

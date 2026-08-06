@@ -124,6 +124,7 @@ def main() -> None:
     }
     attributed_facts = all(
         claim
+        and isinstance(source, str)
         and source in ALLOWED_SOURCES
         and any(
             re.fullmatch(pattern, claim.rstrip(". "))
@@ -157,7 +158,13 @@ def main() -> None:
                 {"claim", "source"},
                 {"unknown", "source"},
             )
-            and ("source" not in item or item["source"] in ALLOWED_SOURCES)
+            and (
+                "source" not in item
+                or (
+                    isinstance(item["source"], str)
+                    and item["source"] in ALLOWED_SOURCES
+                )
+            )
             and any(
                 re.fullmatch(
                     pattern,

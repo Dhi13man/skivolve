@@ -59,6 +59,32 @@ VERIFICATION_CHECKS = (
     "the function signature is unchanged.",
     "retry attempts below 4 remain accepted, while attempt 4 is rejected.",
 )
+NON_GOAL_STATEMENTS = {
+    "do not add dependencies, files, or configuration.",
+    "do not add files, dependencies, configuration, refactors, or broader tests.",
+    "do not add tests or dependencies.",
+    "do not add tests, dependencies, files, or configuration.",
+    "do not alter retry logic beyond the constant value.",
+    "do not change lower-bound behavior or unrelated callers.",
+    "do not change public names, signatures, or unrelated files.",
+    "do not change retry backoff, error handling, callers, or dependencies.",
+    "do not change the function signature or retry logic structure.",
+    "do not change the function signature or retry predicate structure.",
+    "do not change the function signature.",
+    "do not change the public signature.",
+    "do not edit the fixture during this planning pass.",
+    "do not modify unrelated files or add new tests.",
+    "do not refactor unrelated retry behavior.",
+    "no changes to retry logic beyond the constant value.",
+    "no changes to retry logic or callers.",
+    "no documentation, refactoring, or broader api changes.",
+    "no fixture edits are made while producing this plan.",
+    "no new dependencies, configuration, documentation, or compatibility behavior.",
+    "no new files or dependencies.",
+    "no new files, dependencies, configuration, or tests.",
+    "no retry logic changes beyond the constant.",
+    "no signature changes or unrelated refactors.",
+}
 
 
 def main() -> None:
@@ -130,15 +156,6 @@ def main() -> None:
     non_goals = values.get("non_goals")
     non_goals_text = flatten_text(non_goals).lower()
     plan_scope = f"{steps_text} {non_goals_text}"
-    negative_non_goals = (
-        " ".join(
-            text
-            for item in non_goals
-            if (text := flatten_text(item).lower()).startswith(("no ", "do not "))
-        )
-        if isinstance(non_goals, list)
-        else ""
-    )
     may_retry_preserved = all(
         "may_retry" not in step
         or (
@@ -177,13 +194,17 @@ def main() -> None:
     bounded_non_goals = (
         isinstance(non_goals, list)
         and 2 <= len(non_goals) <= 5
+        and all(
+            isinstance(item, str) and item.lower() in NON_GOAL_STATEMENTS
+            for item in non_goals
+        )
         and any(word in plan_scope for word in ("signature", "public", "unchanged"))
         and any(
-            word in negative_non_goals
+            word in non_goals_text
             for word in ("dependenc", "files", "configuration", "fixture")
         )
         and any(
-            word in negative_non_goals
+            word in non_goals_text
             for word in ("refactor", "unrelated", "logic", "callers")
         )
         and not (

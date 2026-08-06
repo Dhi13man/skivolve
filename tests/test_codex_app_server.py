@@ -1512,6 +1512,29 @@ class CodexProtocolTests(unittest.TestCase):
 
         protocol._validate_item(item, lifecycle="snapshot")
 
+    def test_terminal_collaboration_item_id_cannot_restart(self) -> None:
+        protocol = _protocol(QueueTransport([]))
+        protocol._thread_id = "thread-1"
+        protocol._turn_id = "turn-1"
+        item = {
+            "agentsStates": {},
+            "id": "spawn-1",
+            "receiverThreadIds": [],
+            "senderThreadId": "thread-1",
+            "status": "inProgress",
+            "tool": "spawnAgent",
+            "type": "collabAgentToolCall",
+        }
+        envelope = {"threadId": "thread-1", "turnId": "turn-1"}
+        protocol._handle_notification("item/started", {**envelope, "item": item})
+        protocol._handle_notification(
+            "item/completed", {**envelope, "item": {**item, "status": "failed"}}
+        )
+
+        with self.assertRaisesRegex(ProviderError, "reused after termination"):
+            protocol._handle_notification("item/started", {**envelope, "item": item})
+        protocol._validate_item({**item, "status": "failed"}, lifecycle="snapshot")
+
     def test_spawn_agent_bounds_total_child_thread_scope(self) -> None:
         protocol = _protocol(QueueTransport([]))
         protocol._thread_id = "thread-1"
@@ -1544,7 +1567,7 @@ class CodexProtocolTests(unittest.TestCase):
         protocol._validate_item(
             {
                 **base,
-                "id": "item-3",
+                "id": "pending-overflow",
                 "receiverThreadIds": [],
                 "status": "inProgress",
             }
@@ -1558,7 +1581,10 @@ class CodexProtocolTests(unittest.TestCase):
                 },
             )
         self.assertEqual(protocol._collab_thread_ids, set(receivers))
-        self.assertEqual(protocol._pending_spawn_items, {("thread-1", "item-3"): None})
+        self.assertEqual(
+            protocol._pending_spawn_items,
+            {("thread-1", "pending-overflow"): None},
+        )
 
     def test_pending_spawn_bounds_early_child_status_scope(self) -> None:
         protocol = _protocol(QueueTransport([]))

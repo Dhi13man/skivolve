@@ -1260,6 +1260,7 @@ class _AppServerProtocol:
         self._seen_collab_turn_ids: set[tuple[str, str]] = set()
         self._collab_turn_usage: dict[tuple[str, str], dict[str, int]] = {}
         self._pending_spawn_items: dict[tuple[str, str], str | None] = {}
+        self._terminal_collab_item_ids: set[tuple[str, str]] = set()
         self._unbound_collab_thread_ids: set[str] = set()
         self._retained_text_bytes = 0
         self._last_usage: dict[str, int] | None = None
@@ -2100,6 +2101,9 @@ class _AppServerProtocol:
             raise ProviderError("started collaboration item is not in progress")
         if lifecycle in {"completed", "snapshot"} and status == "inProgress":
             raise ProviderError("completed collaboration item is still in progress")
+        item_scope = (sender, item_id)
+        if lifecycle != "snapshot" and item_scope in self._terminal_collab_item_ids:
+            raise ProviderError("collaboration item ID was reused after termination")
         for field in ("model", "prompt", "reasoningEffort"):
             value = item.get(field)
             if value is not None and not isinstance(value, str):
@@ -2213,6 +2217,12 @@ class _AppServerProtocol:
             for receiver in receivers
         ):
             raise ProviderError("collaboration item targeted an unknown child thread")
+        if lifecycle != "snapshot" and status in {"completed", "failed"}:
+            if len(self._terminal_collab_item_ids) >= _MAX_MESSAGES:
+                raise ProviderError(
+                    "terminal collaboration item count exceeds the limit"
+                )
+            self._terminal_collab_item_ids.add(item_scope)
 
     def _validate_completed_turn(
         self, turn: dict[str, Any], owner_thread_id: str

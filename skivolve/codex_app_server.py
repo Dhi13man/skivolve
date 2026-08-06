@@ -1841,6 +1841,12 @@ class _AppServerProtocol:
                     required={"depth", "parent_thread_id"},
                     optional={"agent_nickname", "agent_path", "agent_role"},
                 )
+                for field in ("agent_nickname", "agent_path", "agent_role"):
+                    value = spawn.get(field)
+                    if value is not None and not isinstance(value, str):
+                        raise ProviderError(
+                            f"child thread.source {field} must be a string or null"
+                        )
                 source_parent_id = _require_protocol_id(
                     spawn.get("parent_thread_id"),
                     "child thread.source parent thread id",
@@ -2248,6 +2254,18 @@ class _AppServerProtocol:
                 receiver is None for receiver in self._pending_spawn_items.values()
             )
             receiver = receivers[0] if receivers else None
+            failed_reservation = None
+            if (
+                status == "failed"
+                and receiver is None
+                and expected_receiver is None
+                and self._unbound_collab_thread_ids
+            ):
+                if unbound_slots != 1 or len(self._unbound_collab_thread_ids) != 1:
+                    raise ProviderError(
+                        "receiver-less spawn failure had ambiguous child scope"
+                    )
+                failed_reservation = next(iter(self._unbound_collab_thread_ids))
             if (
                 lifecycle == "snapshot"
                 and status == "completed"
@@ -2279,7 +2297,9 @@ class _AppServerProtocol:
                 and pending
                 and expected_receiver is None
             ):
-                if receiver in self._unbound_collab_thread_ids:
+                if status == "failed" and receiver is None:
+                    pass
+                elif receiver in self._unbound_collab_thread_ids:
                     self._bind_unbound_collab_thread(receiver, sender)
                 elif receiver is not None and receiver in self._collab_thread_ids:
                     raise ProviderError("spawnAgent receiver was already claimed")
@@ -2318,7 +2338,10 @@ class _AppServerProtocol:
             if lifecycle == "snapshot":
                 pass
             elif status == "failed":
-                for failed_receiver in receivers:
+                failed_receivers = set(receivers)
+                if failed_reservation is not None:
+                    failed_receivers.add(failed_reservation)
+                for failed_receiver in failed_receivers:
                     self._unbound_collab_thread_ids.discard(failed_receiver)
                     self._collab_thread_ids.discard(failed_receiver)
                     self._active_collab_thread_ids.discard(failed_receiver)

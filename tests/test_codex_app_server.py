@@ -1990,6 +1990,33 @@ class CodexProtocolTests(unittest.TestCase):
         self.assertEqual(protocol._pending_spawn_items, {})
         self.assertEqual(protocol._unbound_collab_thread_ids, set())
 
+    def test_receiverless_spawn_failure_releases_unambiguous_child_scope(self) -> None:
+        protocol = _protocol(QueueTransport([]))
+        protocol._thread_id = "thread-1"
+        item = {
+            "agentsStates": {},
+            "id": "item-1",
+            "receiverThreadIds": [],
+            "senderThreadId": "thread-1",
+            "status": "inProgress",
+            "tool": "spawnAgent",
+            "type": "collabAgentToolCall",
+        }
+        protocol._validate_item(item)
+        protocol._handle_notification(
+            "thread/status/changed",
+            {
+                "status": {"activeFlags": [], "type": "active"},
+                "threadId": "child-1",
+            },
+        )
+
+        protocol._validate_item({**item, "status": "failed"})
+
+        self.assertEqual(protocol._pending_spawn_items, {})
+        self.assertEqual(protocol._unbound_collab_thread_ids, set())
+        self.assertEqual(protocol._collab_thread_ids, set())
+
     def test_child_thread_provenance_is_validated_before_scope_claim(self) -> None:
         initial = {
             "agentsStates": {},
@@ -2018,6 +2045,22 @@ class CodexProtocolTests(unittest.TestCase):
             thread = _child_thread()
             mutate(thread)
             with self.subTest(label=label), self.assertRaises(ProviderError):
+                protocol._handle_notification("thread/started", {"thread": thread})
+            self.assertEqual(protocol._collab_thread_ids, set())
+            self.assertEqual(protocol._unbound_collab_thread_ids, set())
+            self.assertEqual(protocol._validated_collab_thread_ids, set())
+
+        for field in ("agent_nickname", "agent_path", "agent_role"):
+            protocol = _protocol(QueueTransport([]))
+            protocol._thread_id = "thread-1"
+            protocol._session_id = "session-1"
+            protocol._validate_item(initial)
+            thread = _child_thread()
+            thread["source"]["subAgent"]["thread_spawn"][field] = {}
+            with (
+                self.subTest(field=field),
+                self.assertRaisesRegex(ProviderError, "string or null"),
+            ):
                 protocol._handle_notification("thread/started", {"thread": thread})
             self.assertEqual(protocol._collab_thread_ids, set())
             self.assertEqual(protocol._unbound_collab_thread_ids, set())

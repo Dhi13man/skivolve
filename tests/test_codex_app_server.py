@@ -1707,7 +1707,12 @@ class CodexProtocolTests(unittest.TestCase):
         self.assertEqual(protocol._collab_thread_ids, set())
         self.assertEqual(
             protocol._pending_spawn_items,
-            {("thread-1", "item-1"): (None, "delegated task")},
+            {
+                ("thread-1", "item-1"): (
+                    None,
+                    hashlib.sha256(b"delegated task").digest(),
+                )
+            },
         )
         with self.assertRaisesRegex(ProviderError, "already in progress"):
             protocol._handle_notification(
@@ -1728,6 +1733,37 @@ class CodexProtocolTests(unittest.TestCase):
         self.assertEqual(protocol._collab_thread_ids, {"child-1"})
         self.assertEqual(protocol._collab_parent_ids, {"child-1": "thread-1"})
         self.assertEqual(protocol._pending_spawn_items, {})
+
+    def test_terminal_collaboration_history_retains_prompt_digests(self) -> None:
+        protocol = _protocol(QueueTransport([]))
+        protocol._thread_id = "thread-1"
+        protocol._collab_thread_ids.add("child-1")
+        prompt = "delegated " + "☄" * 50_000
+        initial = {
+            "agentsStates": {},
+            "id": "item-1",
+            "prompt": prompt,
+            "receiverThreadIds": ["child-1"],
+            "senderThreadId": "thread-1",
+            "status": "inProgress",
+            "tool": "sendInput",
+            "type": "collabAgentToolCall",
+        }
+
+        protocol._validate_item(initial, lifecycle="started")
+        protocol._validate_item(
+            {
+                **initial,
+                "status": "completed",
+            },
+            lifecycle="completed",
+        )
+        retained_prompt = protocol._terminal_collab_history[("thread-1", "item-1")][5]
+        self.assertEqual(
+            retained_prompt,
+            hashlib.sha256(prompt.encode("utf-8")).digest(),
+        )
+        self.assertEqual(len(retained_prompt), hashlib.sha256().digest_size)
 
     def test_item_lifecycle_requires_pinned_timestamp_fields(self) -> None:
         item = {
@@ -1798,7 +1834,12 @@ class CodexProtocolTests(unittest.TestCase):
 
         self.assertEqual(
             protocol._pending_spawn_items,
-            {("thread-1", "item-1"): (None, "original task")},
+            {
+                ("thread-1", "item-1"): (
+                    None,
+                    hashlib.sha256(b"original task").digest(),
+                )
+            },
         )
 
     def test_stale_spawn_completion_does_not_reactivate_completed_child(self) -> None:

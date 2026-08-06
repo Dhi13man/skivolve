@@ -2207,7 +2207,12 @@ class _AppServerProtocol:
                 )
             ):
                 raise ProviderError("failed spawn retained an active child")
-            if status != "inProgress" and pending and expected_receiver is None:
+            if (
+                lifecycle != "snapshot"
+                and status != "inProgress"
+                and pending
+                and expected_receiver is None
+            ):
                 if receiver in self._unbound_collab_thread_ids:
                     self._bind_unbound_collab_thread(receiver, sender)
                 elif receiver is not None and receiver in self._collab_thread_ids:
@@ -2221,7 +2226,9 @@ class _AppServerProtocol:
             new_receivers = set(receivers) - self._collab_thread_ids
             if len(self._collab_thread_ids) + len(new_receivers) > _MAX_COLLAB_THREADS:
                 raise ProviderError("collaboration thread count exceeds the limit")
-            if status == "inProgress":
+            if lifecycle == "snapshot":
+                pass
+            elif status == "inProgress":
                 if not pending:
                     if any(
                         receiver in self._collab_thread_ids for receiver in receivers
@@ -2242,7 +2249,9 @@ class _AppServerProtocol:
                     self._pending_spawn_items[pending_key] = receiver
             else:
                 self._pending_spawn_items.pop(pending_key, None)
-            if status == "failed":
+            if lifecycle == "snapshot":
+                pass
+            elif status == "failed":
                 for failed_receiver in receivers:
                     self._unbound_collab_thread_ids.discard(failed_receiver)
                     self._collab_thread_ids.discard(failed_receiver)

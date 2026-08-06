@@ -1550,6 +1550,31 @@ class CodexProtocolTests(unittest.TestCase):
         self.assertEqual(protocol._pending_spawn_items, {})
         self.assertEqual(protocol._collab_thread_ids, set())
 
+    def test_spawn_snapshot_does_not_mutate_live_scope(self) -> None:
+        protocol = _protocol(QueueTransport([]))
+        protocol._thread_id = "thread-1"
+        protocol._collab_thread_ids.add("child-1")
+        protocol._pending_spawn_items[("thread-1", "item-1")] = "child-1"
+
+        protocol._validate_item(
+            {
+                "agentsStates": {"child-1": {"status": "errored"}},
+                "id": "item-1",
+                "receiverThreadIds": ["child-1"],
+                "senderThreadId": "thread-1",
+                "status": "failed",
+                "tool": "spawnAgent",
+                "type": "collabAgentToolCall",
+            },
+            owner_thread_id="thread-1",
+            lifecycle="snapshot",
+        )
+
+        self.assertEqual(
+            protocol._pending_spawn_items, {("thread-1", "item-1"): "child-1"}
+        )
+        self.assertEqual(protocol._collab_thread_ids, {"child-1"})
+
     def test_completed_spawn_requires_exactly_one_receiver(self) -> None:
         initial = {
             "agentsStates": {},

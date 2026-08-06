@@ -1,0 +1,1 @@
+{"evidence":["failure.log:2","worker.py:2-3"],"root_cause":"The condition attempts >= 0 includes zero, but attempts=0 never returns ok; it returns retry.","unverified":"The original check command and broader test suite were not supplied.","verdict":"failed","verification":"Reproduced `outcome(0)=ok`."}

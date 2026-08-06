@@ -17,6 +17,21 @@ from final_output import (  # noqa: E402
 
 
 EXPECTED_KEYS = {"level", "steps", "verification", "non_goals"}
+PRODUCTION_STEP_PATTERNS = (
+    r"in policy\.py, change max_retries from 3 to 4(?: and keep may_retry unchanged|; "
+    r"preserve may_retry\(attempt\) unchanged)\.?",
+    r"change policy\.py:1 from max_retries = 3 to max_retries = 4(?: and keep "
+    r"may_retry\(attempt\) unchanged|; leave may_retry\(attempt\) unchanged)?\.?",
+    r"change max_retries from 3 to 4; leave may_retry(?:\(attempt\)|'s signature and "
+    r"logic) unchanged\. policy\.py",
+    r"change only max_retries = 3 to max_retries = 4; preserve may_retry\(attempt\) "
+    r"unchanged\. policy\.py",
+)
+COMMAND_PATTERN = (
+    r"(?:python3? -m unittest(?: -v)? test_policy\.py|python3 test_policy\.py|"
+    r"run python3 -m unittest -v test_policy\.py(?: from the fixture root; "
+    r"(?:test_boundary must pass|expect the boundary test to pass))?)\.?"
+)
 
 
 def main() -> None:
@@ -30,11 +45,12 @@ def main() -> None:
         else []
     )
     verification_value = values.get("verification", "")
-    command_value = (
-        verification_value.get("command", "")
-        if isinstance(verification_value, dict)
-        else verification_value
-    )
+    if isinstance(verification_value, dict):
+        command_value = verification_value.get("command", "")
+    elif isinstance(verification_value, list) and verification_value:
+        command_value = verification_value[0]
+    else:
+        command_value = verification_value
     command = flatten_text(command_value).lower().replace("`", "")
     non_goals = values.get("non_goals")
     non_goals_text = flatten_text(non_goals).lower()
@@ -61,18 +77,15 @@ def main() -> None:
         )
         for step in step_texts
     )
+    production_steps = [step for step in step_texts if "max_retries" in step]
 
     precise_production = (
         isinstance(steps, list)
         and 2 <= len(steps) <= 3
-        and "policy.py" in steps_text
-        and "max_retries" in steps_text
+        and len(production_steps) == 1
         and any(
-            transition in steps_text
-            for transition in (
-                "max_retries from 3 to 4",
-                "max_retries = 3 to max_retries = 4",
-            )
+            re.fullmatch(pattern, production_steps[0])
+            for pattern in PRODUCTION_STEP_PATTERNS
         )
         and "may_retry" in steps_text
         and may_retry_preserved
@@ -84,24 +97,7 @@ def main() -> None:
             and "attempt 4 is rejected" in steps_text
         )
     )
-    native_command = (
-        command.startswith(
-            (
-                "python ",
-                "python3 ",
-                "run python ",
-                "run python3 ",
-                "execute python ",
-                "execute python3 ",
-            )
-        )
-        and "test_policy.py" in command
-        and ("unittest" in command or "python3 test_policy.py" in command)
-        and not any(
-            phrase in command
-            for phrase in ("do not", "don't", "not run", "unnecessary", "skip ")
-        )
-    )
+    native_command = bool(re.fullmatch(COMMAND_PATTERN, command))
     bounded_non_goals = (
         isinstance(non_goals, list)
         and 2 <= len(non_goals) <= 5

@@ -35,6 +35,17 @@ DIRECT_EVIDENCE_PATTERN = (
     r"direct evaluation produced outcome\(0\)=ok; boundary values were "
     r"\(-1, retry\), \(0, ok\), \(1, ok\)"
 )
+ROOT_CAUSE_PATTERNS = (
+    r"the >= 0 condition includes zero, so outcome\(0\) returns ok instead of retry",
+    r"the condition attempts >= 0 includes zero, so outcome\(0\) returns ok instead of "
+    r"(?:the )?expected retry",
+    r"the nonnegative guard treats the initial attempt \(0\) as successful",
+    r"the condition treats attempts=0 as successful because >= 0 is true",
+    r"worker\.py:2 uses an inclusive nonnegative condition, so the initial attempt "
+    r"enters the ok branch",
+    r"the condition at worker\.py:2 uses >= 0, so attempts=0 reaches worker\.py:3 and "
+    r"returns ok instead of retry",
+)
 
 
 def main() -> None:
@@ -60,39 +71,11 @@ def main() -> None:
     cause_plain = cause.replace("`", "").replace('"', "").replace("'", "")
     verification_plain = verification.replace("`", "").replace('"', "").replace("'", "")
 
-    zero_observed_ok = any(
-        phrase in cause_plain
-        for phrase in (
-            "outcome(0) returns ok",
-            "outcome(0)=ok",
-            "attempts=0 is classified as ok",
-            "attempts=0 as successful",
-            "zero attempts are classified as successful",
-            "initial attempt (0) as successful",
-            "initial attempt enters the ok branch",
-        )
-    ) or (
-        "attempts=0" in cause_plain
-        and any(
-            phrase in cause_plain
-            for phrase in (
-                "observed ok",
-                "observed=ok",
-                "observes ok",
-                "returns ok",
-                "to ok",
-                "ok branch",
-            )
-        )
-    )
-
     concrete_cause = (
-        (verdict == "failed" or verdict.startswith("the check fails because "))
-        and ("0" in cause or "zero" in cause or "initial attempt" in cause)
-        and any(
-            token in cause for token in (">= 0", ">=0", "nonnegative", "includes zero")
-        )
-        and zero_observed_ok
+        verdict == "failed" or verdict.startswith("the check fails because ")
+    ) and any(
+        re.fullmatch(pattern, cause_plain.rstrip(". "))
+        for pattern in ROOT_CAUSE_PATTERNS
     )
     bounded_evidence = isinstance(evidence, list) and 2 <= len(evidence) <= 3
     failure_matches = [

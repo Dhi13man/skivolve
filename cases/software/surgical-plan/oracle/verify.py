@@ -32,6 +32,18 @@ COMMAND_PATTERN = (
     r"run python3 -m unittest -v test_policy\.py(?: from the fixture root; "
     r"(?:test_boundary must pass|expect the boundary test to pass))?)\.?"
 )
+TEST_STEP_PATTERNS = (
+    r"update test_policy\.py so may_retry\(3\) is true and may_retry\(4\) is false\.?",
+    r"in test_policy\.py, (?:assert|update test_boundary to assert) may_retry\(3\) is "
+    r"true and may_retry\(4\) is false\.?",
+    r"update the focused boundary assertions so may_retry\(3\) is true and "
+    r"may_retry\(4\) is false\. test_policy\.py",
+    r"update test_boundary to assert may_retry\(3\) is true and may_retry\(4\) is "
+    r"false\. test_policy\.py",
+    r"update test_policy\.py:8-9 so may_retry\(3\) is true and may_retry\(4\) is false\.?",
+    r"update the focused boundary test so attempts 2 and 3 are accepted, while attempt "
+    r"4 is rejected\. test_policy\.py",
+)
 
 
 def main() -> None:
@@ -90,12 +102,14 @@ def main() -> None:
         and "may_retry" in steps_text
         and may_retry_preserved
     )
-    focused_test = "test_policy.py" in steps_text and (
-        ("may_retry(3) is true" in steps_text and "may_retry(4) is false" in steps_text)
-        or (
-            "attempts 2 and 3 are accepted" in steps_text
-            and "attempt 4 is rejected" in steps_text
-        )
+    test_steps = [
+        step
+        for step in step_texts
+        if "test_policy.py" in step
+        and ("may_retry(3)" in step or "attempts 2 and 3" in step)
+    ]
+    focused_test = len(test_steps) == 1 and any(
+        re.fullmatch(pattern, test_steps[0]) for pattern in TEST_STEP_PATTERNS
     )
     native_command = bool(re.fullmatch(COMMAND_PATTERN, command))
     bounded_non_goals = (

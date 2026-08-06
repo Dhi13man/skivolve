@@ -57,6 +57,36 @@ DECISION_PATTERN = (
     r"(?:do_not_replace_yet|do not replace the current engine yet(?:; the adoption "
     r"requirement is (?:not met|unmet))?)"
 )
+NEXT_CHECK_PATTERNS = (
+    r"run the exact release candidate under the production-shaped workload and measure "
+    r"p99 latency\. whether the exact-candidate production-shaped p99 evidence meets "
+    r"the required threshold",
+    r"run the exact release candidate, confirming q-17 identity, on the "
+    r"production-shaped workload and measure p99 against the current engine",
+    r"run the exact release candidate under production-shaped load and measure p99",
+    r"identify the exact release candidate, then run it on the production-shaped "
+    r"workload and measure p99 against the current engine",
+    r"identify the exact release candidate, then run it under the production-shaped "
+    r"workload and measure p99 latency",
+    r"identify the exact release candidate, then run it under the production-shaped "
+    r"workload and measure p99 latency\. whether the required release-candidate, "
+    r"production-shaped, tail-latency evidence exists; the supplied evidence still "
+    r"lacks an acceptance threshold for interpreting the measured p99",
+    r"run the exact q-17 release candidate and the current engine on the same "
+    r"production-shaped workload, measuring p99 latency\. whether the required "
+    r"release-candidate, production-shaped, p99 evidence exists; the supplied rule "
+    r"does not define the qualifying p99 result",
+    r"confirm the exact release candidate, then measure its p99 latency under the "
+    r"production-shaped workload\. the missing candidate identity and p99 evidence "
+    r"required by the adoption rule",
+    r"run the exact release candidate, confirming whether it is q-17, under the "
+    r"production-shaped workload and record p99 latency",
+    r"verify the exact release-candidate identity, then measure its p99 latency under "
+    r"the production-shaped workload and compare it with the current engine\. the "
+    r"missing evidence required by the adoption rule",
+    r"identify the exact release candidate, then compare it with the current engine on "
+    r"the same production-shaped workload while measuring p99 latency",
+)
 
 
 def main() -> None:
@@ -144,32 +174,9 @@ def main() -> None:
         and any(token in unknowns_text for token in ("q-17", "release candidate"))
         and any(word in unknowns_text for word in ("whether", "identity", "matches"))
     )
-    resolving_check = (
-        not any(
-            phrase in next_check
-            for phrase in (
-                "do not run",
-                "do not measure",
-                "don't run",
-                "don't measure",
-                "not run",
-                "not measure",
-                "avoid running",
-                "avoid measuring",
-                "skip",
-                "no need to run",
-                "without measuring",
-            )
-        )
-        and "p99" in next_check
-        and "production" in next_check
-        and any(
-            token in next_check
-            for token in ("q-17", "exact release candidate", "exact release-candidate")
-        )
-        and any(
-            word in next_check for word in ("run", "measure", "compare", "benchmark")
-        )
+    resolving_check = any(
+        re.fullmatch(pattern, next_check.rstrip(". "))
+        for pattern in NEXT_CHECK_PATTERNS
     )
     restrained = (
         artifact is not None

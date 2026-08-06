@@ -1261,8 +1261,9 @@ class _AppServerProtocol:
         self._seen_collab_turn_ids: set[tuple[str, str]] = set()
         self._collab_turn_usage: dict[tuple[str, str], dict[str, int]] = {}
         self._pending_spawn_items: dict[tuple[str, str], str | None] = {}
-        self._terminal_spawn_history: dict[
-            tuple[str, str], tuple[str, tuple[str, ...]]
+        self._terminal_collab_history: dict[
+            tuple[str, str],
+            tuple[str, str, tuple[str, ...], tuple[tuple[str, str], ...]],
         ] = {}
         self._terminal_collab_item_ids: set[tuple[str, str]] = set()
         self._active_nonspawn_items: dict[
@@ -1895,16 +1896,19 @@ class _AppServerProtocol:
                         ), receiver in self._pending_spawn_items.items()
                     )
                     or any(
-                        sender == parent_id
+                        spawn_tool == "spawnAgent"
+                        and sender == parent_id
                         and spawn_status == "completed"
                         and spawn_receivers == (announced,)
                         for (
                             sender,
                             _item_id,
                         ), (
+                            spawn_tool,
                             spawn_status,
                             spawn_receivers,
-                        ) in self._terminal_spawn_history.items()
+                            _agent_statuses,
+                        ) in self._terminal_collab_history.items()
                     )
                 ):
                     raise ProviderError(
@@ -2202,17 +2206,30 @@ class _AppServerProtocol:
                     > _MAX_RETAINED_TEXT_BYTES
                 ):
                     raise ProviderError("collaboration agent message exceeds the limit")
+        terminal_item = (
+            tool,
+            status,
+            tuple(receivers),
+            tuple(sorted(agent_statuses.items())),
+        )
+        if (
+            lifecycle == "snapshot"
+            and self._terminal_collab_history.get(item_scope) != terminal_item
+        ):
+            raise ProviderError(
+                "collaboration snapshot lacked matching live terminal history"
+            )
         active_nonspawn_item = self._active_nonspawn_items.get(item_scope)
         if tool != "spawnAgent" and lifecycle == "started":
             if active_nonspawn_item is not None:
                 raise ProviderError("collaboration item was already in progress")
-        elif (
-            tool != "spawnAgent"
-            and lifecycle == "completed"
-            and active_nonspawn_item is not None
-            and active_nonspawn_item != (tool, tuple(receivers))
-        ):
-            raise ProviderError("terminal collaboration item disagreed with its start")
+        elif tool != "spawnAgent" and lifecycle == "completed":
+            if active_nonspawn_item is None:
+                raise ProviderError("collaboration item completed without a start")
+            if active_nonspawn_item != (tool, tuple(receivers)):
+                raise ProviderError(
+                    "terminal collaboration item disagreed with its start"
+                )
         if tool == "spawnAgent":
             if status == "completed" and len(receivers) != 1:
                 raise ProviderError(
@@ -2231,10 +2248,10 @@ class _AppServerProtocol:
                 receiver is None for receiver in self._pending_spawn_items.values()
             )
             receiver = receivers[0] if receivers else None
-            if lifecycle == "snapshot" and (
-                self._terminal_spawn_history.get(item_scope)
-                != (status, tuple(receivers))
-                or (status == "completed" and receiver not in self._collab_thread_ids)
+            if (
+                lifecycle == "snapshot"
+                and status == "completed"
+                and receiver not in self._collab_thread_ids
             ):
                 raise ProviderError(
                     "spawnAgent snapshot lacked matching live terminal history"
@@ -2332,8 +2349,7 @@ class _AppServerProtocol:
                     "terminal collaboration item count exceeds the limit"
                 )
             self._terminal_collab_item_ids.add(item_scope)
-            if tool == "spawnAgent":
-                self._terminal_spawn_history[item_scope] = (status, tuple(receivers))
+            self._terminal_collab_history[item_scope] = terminal_item
         if lifecycle == "started" and tool != "spawnAgent":
             if (
                 item_scope not in self._active_nonspawn_items

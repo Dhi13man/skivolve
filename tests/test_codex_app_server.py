@@ -1080,6 +1080,17 @@ class CodexProtocolTests(unittest.TestCase):
             "type": "collabAgentToolCall",
         }
         envelope = {"threadId": "main-thread", "turnId": "main-turn"}
+        completed_resume = {
+            **resume,
+            "agentsStates": {"child-1": {"status": "running"}},
+            "status": "completed",
+        }
+        with self.assertRaisesRegex(ProviderError, "live terminal history"):
+            protocol._validate_item(completed_resume, lifecycle="snapshot")
+        with self.assertRaisesRegex(ProviderError, "completed without a start"):
+            protocol._handle_notification(
+                "item/completed", {**envelope, "item": completed_resume}
+            )
         protocol._handle_notification("item/started", {**envelope, "item": resume})
         with self.assertRaisesRegex(ProviderError, "disagreed with its start"):
             protocol._handle_notification(
@@ -1664,7 +1675,7 @@ class CodexProtocolTests(unittest.TestCase):
         protocol._validate_item(initial)
         protocol._validate_item(completed)
         live_scope = (
-            dict(protocol._terminal_spawn_history),
+            dict(protocol._terminal_collab_history),
             set(protocol._collab_thread_ids),
             dict(protocol._collab_parent_ids),
         )
@@ -1682,7 +1693,7 @@ class CodexProtocolTests(unittest.TestCase):
         self.assertEqual(
             live_scope,
             (
-                protocol._terminal_spawn_history,
+                protocol._terminal_collab_history,
                 protocol._collab_thread_ids,
                 protocol._collab_parent_ids,
             ),

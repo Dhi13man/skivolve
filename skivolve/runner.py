@@ -3450,6 +3450,9 @@ class EvalRunner:
             self._assert_case_integrity(case)
             _copy_tree(case.fixture_dir, workspace, ignore_generated_caches=True)
             before = _read_tree(workspace, ignore_generated_caches=True)
+            before_permissions = _read_tree_permissions(
+                workspace, ignore_generated_caches=True
+            )
             hashes["fixture_before_sha256"] = _states_hash(before)
             stage = "source_materialization"
             source = self._materialize_source(variant, case, temp_root / "source")
@@ -3557,6 +3560,12 @@ class EvalRunner:
             )
             stage = "agent_workspace_scan"
             after_agent = _read_tree(workspace, ignore_generated_caches=True)
+            after_agent_permissions = _read_tree_permissions(
+                workspace, ignore_generated_caches=True
+            )
+            agent_workspace_mutated = (
+                before != after_agent or before_permissions != after_agent_permissions
+            )
             hashes["workspace_after_agent_sha256"] = _states_hash(after_agent)
             diff_text = _diff_states(before, after_agent)
             hashes["diff_sha256"] = _sha256(diff_text.encode("utf-8"))
@@ -3588,7 +3597,7 @@ class EvalRunner:
                 normalized_artifact,
                 result_root,
                 workspace_read_only=final_output_artifact,
-                agent_workspace_mutated=before != after_agent,
+                agent_workspace_mutated=agent_workspace_mutated,
             )
             verifier_after_hash = _tree_hash(verifier_workspace)
             verifier_json["workspace_before_sha256"] = verifier_before_hash
@@ -6108,6 +6117,7 @@ def _scan_tree(
     *,
     ignore_generated_caches: bool = False,
     ignore_empty_directories: bool = False,
+    include_directories: bool = False,
 ) -> list[Path]:
     if not root.is_dir() or root.is_symlink():
         raise RunnerError(f"tree root must be a regular directory: {root}")
@@ -6115,7 +6125,7 @@ def _scan_tree(
         return _scan_normalized_worktree(
             root, ignore_generated_caches=ignore_generated_caches
         )
-    files: list[Path] = []
+    paths: list[Path] = []
     total = 0
     entries = 0
     for current, directories, filenames in os.walk(root, followlinks=False):
@@ -6136,6 +6146,8 @@ def _scan_tree(
                     f"tree exceeds maximum entries {MAX_TREE_ENTRIES}: {root}"
                 )
             retained_directories.append(name)
+            if include_directories:
+                paths.append(path)
         directories[:] = retained_directories
         for name in filenames:
             path = current_path / name
@@ -6155,8 +6167,8 @@ def _scan_tree(
             total += size
             if total > MAX_TREE_BYTES:
                 raise RunnerError(f"tree exceeds {MAX_TREE_BYTES} bytes: {root}")
-            files.append(path)
-    return sorted(files, key=lambda path: path.relative_to(root).as_posix())
+            paths.append(path)
+    return sorted(paths, key=lambda path: path.relative_to(root).as_posix())
 
 
 def _read_tree(
@@ -6175,6 +6187,23 @@ def _read_tree(
         mode = path.stat().st_mode
         states[relative] = _FileState(path.read_bytes(), bool(mode & stat.S_IXUSR))
     return states
+
+
+def _read_tree_permissions(
+    root: Path,
+    *,
+    ignore_generated_caches: bool = False,
+) -> dict[str, int]:
+    permissions = {".": stat.S_IMODE(root.stat().st_mode)}
+    for path in _scan_tree(
+        root,
+        ignore_generated_caches=ignore_generated_caches,
+        include_directories=True,
+    ):
+        permissions[path.relative_to(root).as_posix()] = stat.S_IMODE(
+            path.stat().st_mode
+        )
+    return permissions
 
 
 def _copy_tree(

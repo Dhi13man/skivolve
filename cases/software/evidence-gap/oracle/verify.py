@@ -24,7 +24,6 @@ def main() -> None:
     values = artifact or {}
     decision = flatten_text(values.get("decision", "")).lower()
     facts = values.get("supported_facts")
-    facts_text = flatten_text(facts).lower()
     unknowns = values.get("unknowns")
     unknowns_text = flatten_text(unknowns).lower()
     next_check = flatten_text(values.get("next_check", "")).lower()
@@ -36,20 +35,66 @@ def main() -> None:
         and all(isinstance(item, dict) for item in facts)
         else []
     )
-    sources = {
-        item.get("source")
+    fact_claims = [
+        (
+            item.get("source"),
+            flatten_text(item.get("claim", "")).lower(),
+        )
         for item in fact_objects
-        if isinstance(item.get("source"), str)
+    ]
+    sources = {source for source, _claim in fact_claims if isinstance(source, str)}
+    source_text = {
+        source: " ".join(
+            claim for claim_source, claim in fact_claims if claim_source == source
+        )
+        for source in ALLOWED_SOURCES
     }
+    attributed_facts = all(
+        claim
+        and source in ALLOWED_SOURCES
+        and (
+            (
+                source == "decision_rule.txt"
+                and not any(token in claim for token in ("18%", "9%", "q-17"))
+                and (("production" in claim and "p99" in claim) or "median" in claim)
+            )
+            or (
+                source == "pilot_primary.txt"
+                and not any(token in claim for token in ("9%", "earlier", "bursty"))
+                and (
+                    ("18%" in claim and "median" in claim)
+                    or ("tail" in claim and "not measured" in claim)
+                )
+            )
+            or (
+                source == "pilot_counter.txt"
+                and not any(token in claim for token in ("18%", "50-request", "median"))
+                and (
+                    ("9%" in claim and "p99" in claim)
+                    or (
+                        any(token in claim for token in ("earlier", "build"))
+                        and any(
+                            token in claim for token in ("match", "identity", "q-17")
+                        )
+                    )
+                )
+            )
+        )
+        for source, claim in fact_claims
+    )
     balanced_facts = (
         bool(fact_objects)
-        and sources <= ALLOWED_SOURCES
-        and {"pilot_primary.txt", "pilot_counter.txt"} <= sources
-        and "18%" in facts_text
-        and "median" in facts_text
-        and "tail" in facts_text
-        and "9%" in facts_text
-        and "p99" in facts_text
+        and attributed_facts
+        and sources == ALLOWED_SOURCES
+        and all(
+            token in source_text["decision_rule.txt"]
+            for token in ("production", "p99", "median")
+        )
+        and all(
+            token in source_text["pilot_primary.txt"]
+            for token in ("18%", "median", "tail")
+        )
+        and all(token in source_text["pilot_counter.txt"] for token in ("9%", "p99"))
     )
     material_unknowns = (
         isinstance(unknowns, list)

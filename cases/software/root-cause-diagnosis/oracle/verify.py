@@ -44,7 +44,21 @@ def main() -> None:
         and "failure.log:2" in evidence_text
         and "worker.py:2" in evidence_text
     )
-    checked = any(
+    checked = not any(
+        phrase in verification
+        for phrase in (
+            "not executed",
+            "never executed",
+            "did not execute",
+            "not reproduced",
+            "could not reproduce",
+            "no check",
+            "not checked",
+            "without running",
+            "not run",
+            "not performed",
+        )
+    ) and any(
         word in verification
         for word in (
             "executed",

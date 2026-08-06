@@ -3089,6 +3089,58 @@ print(json.dumps({
             self.assertTrue(arm["verifier"]["sandbox"]["agent_workspace_mutated"])
             self.assertFalse(arm["verifier"]["workspace_mutated"])
 
+    def test_final_output_mutation_signal_covers_directories_and_permissions(
+        self,
+    ) -> None:
+        self.fixture.use_objective(artifact_kind="final_output_json")
+        self.fixture.set_verifier(
+            """import json
+import os
+
+passed = os.environ["EVAL_AGENT_WORKSPACE_MUTATED"] == "1"
+print(json.dumps({
+    "passed": passed,
+    "assertions": [{
+        "id": "answer-present",
+        "passed": passed,
+        "evidence": "agent workspace mutation signal",
+    }],
+    "metrics": {},
+}))
+"""
+        )
+        self.fixture.save_manifest()
+
+        def create_empty_directory(workspace: Path) -> None:
+            (workspace / "empty").mkdir()
+
+        def remove_owner_write_permission(workspace: Path) -> None:
+            (workspace / "input.txt").chmod(0o444)
+
+        mutations = (
+            ("empty-directory", create_empty_directory),
+            ("file-permission", remove_owner_write_permission),
+        )
+        for name, mutate in mutations:
+            with self.subTest(name=name):
+
+                def json_output(request):
+                    mutate(request.workspace)
+                    return '{"a": 1}'
+
+                result = EvalRunner(
+                    self.load(), FakeProvider(agent_handler=json_output)
+                ).run(
+                    RunSelection(comparison_ids=("without-current",)),
+                    output_dir=self.output(f"final-json-{name}"),
+                )
+
+                self.assertTrue(result["passed"], result)
+                for arm in result["pairs"][0]["arms"].values():
+                    self.assertTrue(
+                        arm["verifier"]["sandbox"]["agent_workspace_mutated"]
+                    )
+
     def test_preflight_when_final_output_is_judged_requires_calibrated_profile(
         self,
     ) -> None:

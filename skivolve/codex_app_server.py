@@ -2020,7 +2020,7 @@ class _AppServerProtocol:
             if (
                 self._pending_spawn_items
                 or any(self._collab_turn_ids.values())
-                or not self._validated_collab_thread_ids <= children_with_turns
+                or not self._collab_thread_ids <= children_with_turns
             ):
                 raise ProviderError(
                     "Codex completed root turn with outstanding child work"

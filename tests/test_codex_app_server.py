@@ -990,15 +990,24 @@ class CodexProtocolTests(unittest.TestCase):
                 "status": "completed",
             },
         }
-        for state in ("pending-spawn", "awaiting-turn", "active-turn"):
+        for state in (
+            "pending-spawn",
+            "bound-thread",
+            "awaiting-turn",
+            "active-turn",
+        ):
             protocol = _protocol(QueueTransport([]))
             protocol._thread_id = "main-thread"
             protocol._turn_id = "main-turn"
             if state == "pending-spawn":
                 protocol._pending_spawn_items[("main-thread", "spawn-1")] = None
+            elif state == "bound-thread":
+                protocol._collab_thread_ids.add("child-1")
             elif state == "awaiting-turn":
+                protocol._collab_thread_ids.add("child-1")
                 protocol._validated_collab_thread_ids.add("child-1")
             else:
+                protocol._collab_thread_ids.add("child-1")
                 protocol._collab_turn_ids["child-1"] = {"child-turn"}
 
             with (
@@ -1011,6 +1020,7 @@ class CodexProtocolTests(unittest.TestCase):
         protocol = _protocol(QueueTransport([]))
         protocol._thread_id = "main-thread"
         protocol._turn_id = "main-turn"
+        protocol._collab_thread_ids.add("child-1")
         protocol._validated_collab_thread_ids.add("child-1")
         protocol._seen_collab_turn_ids.add(("child-1", "child-turn"))
         protocol._handle_notification("turn/completed", completed)

@@ -96,7 +96,13 @@ def main() -> None:
     facts = values.get("supported_facts")
     unknowns = values.get("unknowns")
     unknowns_text = flatten_text(unknowns).lower()
-    next_check = flatten_text(values.get("next_check", "")).lower()
+    next_check_value = values.get("next_check", "")
+    next_check = flatten_text(next_check_value).lower()
+    next_check_schema = isinstance(next_check_value, str) or (
+        isinstance(next_check_value, dict)
+        and set(next_check_value) == {"check", "resolves"}
+        and all(isinstance(value, str) for value in next_check_value.values())
+    )
 
     fact_objects = (
         facts
@@ -190,7 +196,7 @@ def main() -> None:
         and set(artifact) == EXPECTED_KEYS
         and re.fullmatch(DECISION_PATTERN, decision.rstrip(". ")) is not None
         and sources <= ALLOWED_SOURCES
-        and "confidence" not in flatten_text(artifact).lower()
+        and next_check_schema
         and agent_workspace_unchanged()
     )
 

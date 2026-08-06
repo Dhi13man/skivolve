@@ -68,7 +68,7 @@ def main() -> None:
     )
 
     concrete_cause = (
-        any(word in verdict for word in ("fail", "bug", "zero"))
+        (verdict == "failed" or verdict.startswith("the check fails because "))
         and ("0" in cause or "zero" in cause or "initial attempt" in cause)
         and any(
             token in cause for token in (">= 0", ">=0", "nonnegative", "includes zero")

@@ -110,6 +110,22 @@ def main() -> None:
                 {"unknown", "source"},
             )
             and ("source" not in item or item["source"] in ALLOWED_SOURCES)
+            and any(
+                subject in flatten_text(item).lower()
+                for subject in (
+                    "q-17",
+                    "release candidate",
+                    "p99",
+                    "earlier build",
+                    "threshold",
+                    "comparison",
+                )
+            )
+            and not re.search(
+                r"\b(?:replac|adopt|switch|migrat|deploy|authoriz|approv|"
+                r"recommend|proceed)\w*\b",
+                flatten_text(item).lower(),
+            )
             and not any(
                 resolved in flatten_text(item).lower()
                 for resolved in (

@@ -50,7 +50,10 @@ def main() -> None:
     )
     may_retry_preserved = all(
         "may_retry" not in step
-        or "test_policy.py" in step
+        or (
+            "test_policy.py" in step
+            and "policy.py" not in step.replace("test_policy.py", "")
+        )
         or re.search(
             r"may_retry(?:\(attempt\)|'s signature and logic)? unchanged[.;]?"
             r"(?: policy\.py)?$",

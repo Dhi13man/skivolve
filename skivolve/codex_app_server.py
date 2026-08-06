@@ -1255,11 +1255,31 @@ class _AppServerProtocol:
         self._completed_messages: list[dict[str, str | None]] = []
         self._collab_thread_ids: set[str] = set()
         self._validated_collab_thread_ids: set[str] = set()
+        self._collab_parent_ids: dict[str, str] = {}
+        self._collab_depths: dict[str, int] = {}
         self._collab_turn_ids: dict[str, set[str]] = {}
+        self._active_collab_thread_ids: set[str] = set()
+        self._seen_collab_turn_ids: set[tuple[str, str]] = set()
         self._collab_turn_usage: dict[tuple[str, str], dict[str, int]] = {}
-        self._collab_turn_count = 0
         self._pending_spawn_items: dict[tuple[str, str], str | None] = {}
+        self._terminal_collab_history: dict[
+            tuple[str, str],
+            tuple[
+                str,
+                str,
+                tuple[str, ...],
+                tuple[tuple[str, str], ...],
+                str | None,
+                str | None,
+                str | None,
+            ],
+        ] = {}
+        self._terminal_collab_item_ids: set[tuple[str, str]] = set()
+        self._active_nonspawn_items: dict[
+            tuple[str, str], tuple[str, tuple[str, ...]]
+        ] = {}
         self._unbound_collab_thread_ids: set[str] = set()
+        self._failed_collab_thread_ids: set[str] = set()
         self._retained_text_bytes = 0
         self._last_usage: dict[str, int] | None = None
         self._rate_limits: dict[str, Any] | None = None
@@ -1658,6 +1678,17 @@ class _AppServerProtocol:
 
     def _handle_notification(self, method: str, raw_params: Any) -> None:
         params = _require_object(raw_params, "notification params")
+        if self._turn_completed is not None and (
+            method.startswith(("item/", "model/", "turn/"))
+            or method
+            in {
+                "error",
+                "thread/started",
+                "thread/status/changed",
+                "thread/tokenUsage/updated",
+            }
+        ):
+            raise ProviderError("Codex emitted turn traffic after root completion")
         if method == "model/rerouted":
             raise ProviderError("Codex rerouted the pinned model")
         if method == "error":
@@ -1795,6 +1826,72 @@ class _AppServerProtocol:
                 thread.get("id"), "thread/started.thread.id"
             )
             if self._thread_id is not None and announced != self._thread_id:
+                _require_exact_keys(
+                    thread,
+                    "child thread",
+                    required={
+                        "cliVersion",
+                        "createdAt",
+                        "cwd",
+                        "ephemeral",
+                        "id",
+                        "modelProvider",
+                        "preview",
+                        "sessionId",
+                        "source",
+                        "status",
+                        "turns",
+                        "updatedAt",
+                    },
+                    optional={
+                        "agentNickname",
+                        "agentRole",
+                        "canAcceptDirectInput",
+                        "extra",
+                        "forkedFromId",
+                        "gitInfo",
+                        "historyMode",
+                        "isPinned",
+                        "name",
+                        "parentThreadId",
+                        "path",
+                        "recencyAt",
+                        "threadSource",
+                    },
+                )
+                for field in ("agentNickname", "agentRole", "name"):
+                    value = thread.get(field)
+                    if value is not None and not isinstance(value, str):
+                        raise ProviderError(
+                            f"child thread.{field} must be a string or null"
+                        )
+                direct_input = thread.get("canAcceptDirectInput")
+                if direct_input is not None and type(direct_input) is not bool:
+                    raise ProviderError(
+                        "child thread.canAcceptDirectInput must be a bool or null"
+                    )
+                if "isPinned" in thread and type(thread["isPinned"]) is not bool:
+                    raise ProviderError("child thread.isPinned must be a bool")
+                if thread.get("extra") is not None:
+                    _require_object(thread["extra"], "child thread.extra")
+                git_info = thread.get("gitInfo")
+                if git_info is not None:
+                    git_info = _require_object(git_info, "child thread.gitInfo")
+                    _require_exact_keys(
+                        git_info,
+                        "child thread.gitInfo",
+                        required=set(),
+                        optional={"branch", "originUrl", "sha"},
+                    )
+                    for field in ("branch", "originUrl", "sha"):
+                        value = git_info.get(field)
+                        if value is not None and not isinstance(value, str):
+                            raise ProviderError(
+                                f"child thread.gitInfo.{field} must be a string or null"
+                            )
+                _optional_bounded_integer(
+                    thread.get("recencyAt"), "child thread.recencyAt"
+                )
                 if announced in self._validated_collab_thread_ids:
                     raise ProviderError("Codex announced a child thread more than once")
                 created_at = _optional_bounded_integer(
@@ -1831,9 +1928,21 @@ class _AppServerProtocol:
                     required={"depth", "parent_thread_id"},
                     optional={"agent_nickname", "agent_path", "agent_role"},
                 )
+                for field in ("agent_nickname", "agent_path", "agent_role"):
+                    value = spawn.get(field)
+                    if value is not None and not isinstance(value, str):
+                        raise ProviderError(
+                            f"child thread.source {field} must be a string or null"
+                        )
                 source_parent_id = _require_protocol_id(
                     spawn.get("parent_thread_id"),
                     "child thread.source parent thread id",
+                )
+                bound_parent_id = self._collab_parent_ids.get(announced)
+                parent_depth = (
+                    0
+                    if parent_id == self._thread_id
+                    else self._collab_depths.get(parent_id)
                 )
                 depth = _optional_bounded_integer(
                     spawn.get("depth"),
@@ -1855,9 +1964,12 @@ class _AppServerProtocol:
                     or updated_at is None
                     or updated_at < created_at
                     or depth is None
+                    or parent_depth is None
+                    or depth != parent_depth + 1
                     or self._session_id is None
                     or session_id != self._session_id
                     or parent_id != source_parent_id
+                    or (bound_parent_id is not None and bound_parent_id != parent_id)
                     or (
                         parent_id != self._thread_id
                         and parent_id not in self._validated_collab_thread_ids
@@ -1875,9 +1987,41 @@ class _AppServerProtocol:
                     raise ProviderError(
                         "Codex child thread provenance differs from the root request"
                     )
+                if not (
+                    any(
+                        sender == parent_id and receiver in {None, announced}
+                        for (
+                            sender,
+                            _item_id,
+                        ), receiver in self._pending_spawn_items.items()
+                    )
+                    or any(
+                        spawn_tool == "spawnAgent"
+                        and sender == parent_id
+                        and spawn_status == "completed"
+                        and spawn_receivers == (announced,)
+                        for (
+                            sender,
+                            _item_id,
+                        ), (
+                            spawn_tool,
+                            spawn_status,
+                            spawn_receivers,
+                            _agent_statuses,
+                            _model,
+                            _prompt,
+                            _reasoning_effort,
+                        ) in self._terminal_collab_history.items()
+                    )
+                ):
+                    raise ProviderError(
+                        "Codex child thread lacked parent-owned spawn history"
+                    )
                 if not self._claim_collab_thread_scope(announced):
                     raise ProviderError("Codex thread announcement changed scope")
                 self._validated_collab_thread_ids.add(announced)
+                self._collab_parent_ids[announced] = parent_id
+                self._collab_depths[announced] = depth
                 return
             if self._announced_thread_id is not None:
                 raise ProviderError("Codex announced more than one thread")
@@ -1897,12 +2041,13 @@ class _AppServerProtocol:
                         "Codex child turn preceded its provenance announcement"
                     )
                 turns = self._collab_turn_ids.setdefault(thread_id, set())
-                if announced in turns:
+                turn_scope = (thread_id, announced)
+                if turn_scope in self._seen_collab_turn_ids:
                     raise ProviderError("Codex announced a child turn more than once")
-                if self._collab_turn_count >= _MAX_COLLAB_TURNS:
+                if len(self._seen_collab_turn_ids) >= _MAX_COLLAB_TURNS:
                     raise ProviderError("collaboration turn count exceeds the limit")
                 turns.add(announced)
-                self._collab_turn_count += 1
+                self._seen_collab_turn_ids.add(turn_scope)
                 return
             if self._announced_turn_id is not None:
                 raise ProviderError("Codex announced more than one turn")
@@ -1988,13 +2133,32 @@ class _AppServerProtocol:
                 ):
                     raise ProviderError("Codex completed an unknown child turn")
                 self._validate_completed_turn(turn, completed_thread_id)
+                if (
+                    completed_thread_id,
+                    completed_turn_id,
+                ) not in self._collab_turn_usage:
+                    raise ProviderError("Codex child turn omitted token usage")
                 self._collab_turn_ids[completed_thread_id].remove(completed_turn_id)
+                self._active_collab_thread_ids.discard(completed_thread_id)
                 return
             if self._turn_id is None or completed_turn_id != self._turn_id:
                 raise ProviderError("Codex completed an unknown turn")
             if self._turn_completed is not None:
                 raise ProviderError("Codex completed the same turn more than once")
             self._validate_completed_turn(turn, completed_thread_id)
+            children_with_turns = {
+                thread_id for thread_id, _turn_id in self._seen_collab_turn_ids
+            }
+            if (
+                self._pending_spawn_items
+                or self._active_nonspawn_items
+                or any(self._collab_turn_ids.values())
+                or self._active_collab_thread_ids
+                or not self._collab_thread_ids <= children_with_turns
+            ):
+                raise ProviderError(
+                    "Codex completed root turn with outstanding child work"
+                )
             self._turn_completed = turn
             return
         if method in _IGNORED_NOTIFICATIONS:
@@ -2080,6 +2244,8 @@ class _AppServerProtocol:
             and (sender == self._thread_id or tool == "spawnAgent")
         ):
             raise ProviderError("collaboration receiver thread ids are invalid")
+        if any(receiver in self._failed_collab_thread_ids for receiver in receivers):
+            raise ProviderError("failed spawn child thread ID was reused")
         status = _require_string(item.get("status"), "collaboration item status")
         if status not in {"inProgress", "completed", "failed"}:
             raise ProviderError("collaboration item status is unknown")
@@ -2087,23 +2253,47 @@ class _AppServerProtocol:
             raise ProviderError("started collaboration item is not in progress")
         if lifecycle in {"completed", "snapshot"} and status == "inProgress":
             raise ProviderError("completed collaboration item is still in progress")
-        for field in ("model", "prompt", "reasoningEffort"):
-            value = item.get(field)
+        item_scope = (sender, item_id)
+        if lifecycle != "snapshot" and item_scope in self._terminal_collab_item_ids:
+            raise ProviderError("collaboration item ID was reused after termination")
+        model = item.get("model")
+        prompt = item.get("prompt")
+        reasoning_effort = item.get("reasoningEffort")
+        for field, value in (
+            ("model", model),
+            ("prompt", prompt),
+            ("reasoningEffort", reasoning_effort),
+        ):
             if value is not None and not isinstance(value, str):
                 raise ProviderError(f"collaboration {field} must be a string or null")
-        if item.get("reasoningEffort") == "":
+        spawn_placeholder = tool == "spawnAgent" and (
+            lifecycle == "started"
+            or (
+                lifecycle in {"completed", "snapshot"}
+                and status == "failed"
+                and not receivers
+            )
+        )
+        if spawn_placeholder:
+            if model != "" or reasoning_effort != "medium":
+                raise ProviderError("spawnAgent placeholder metadata is invalid")
+        elif tool == "spawnAgent" and lifecycle == "completed":
+            if model != self._model or reasoning_effort != self._reasoning_effort:
+                raise ProviderError("terminal spawnAgent metadata is invalid")
+        elif reasoning_effort == "":
             raise ProviderError(
                 "collaboration reasoningEffort must be a non-empty string or null"
             )
-        if item.get("model") not in {None, self._model}:
+        elif model not in {None, self._model}:
             raise ProviderError("collaboration model differs from the pinned model")
-        if item.get("reasoningEffort") not in {None, self._reasoning_effort}:
+        elif reasoning_effort not in {None, self._reasoning_effort}:
             raise ProviderError(
                 "collaboration reasoningEffort differs from the pinned reasoning effort"
             )
         states = _require_object(item.get("agentsStates"), "collaboration agent states")
         if len(states) > _MAX_COLLAB_THREADS:
             raise ProviderError("collaboration agent-state count exceeds the limit")
+        agent_statuses: dict[str, str] = {}
         for raw_thread_id, raw_state in states.items():
             thread_id = _require_protocol_id(
                 raw_thread_id, "collaboration agent-state thread id"
@@ -2130,6 +2320,7 @@ class _AppServerProtocol:
                 "notFound",
             }:
                 raise ProviderError("collaboration agent status is unknown")
+            agent_statuses[thread_id] = agent_status
             message = state.get("message")
             if message is not None:
                 if (
@@ -2141,7 +2332,36 @@ class _AppServerProtocol:
                     > _MAX_RETAINED_TEXT_BYTES
                 ):
                     raise ProviderError("collaboration agent message exceeds the limit")
+        terminal_item = (
+            tool,
+            status,
+            tuple(receivers),
+            tuple(sorted(agent_statuses.items())),
+            model,
+            prompt,
+            reasoning_effort,
+        )
+        if (
+            lifecycle == "snapshot"
+            and self._terminal_collab_history.get(item_scope) != terminal_item
+        ):
+            raise ProviderError(
+                "collaboration snapshot lacked matching live terminal history"
+            )
+        active_nonspawn_item = self._active_nonspawn_items.get(item_scope)
+        if tool != "spawnAgent" and lifecycle == "started":
+            if active_nonspawn_item is not None:
+                raise ProviderError("collaboration item was already in progress")
+        elif tool != "spawnAgent" and lifecycle == "completed":
+            if active_nonspawn_item is None:
+                raise ProviderError("collaboration item completed without a start")
+            if active_nonspawn_item != (tool, tuple(receivers)):
+                raise ProviderError(
+                    "terminal collaboration item disagreed with its start"
+                )
         if tool == "spawnAgent":
+            if lifecycle == "started" and receivers:
+                raise ProviderError("spawnAgent start must not have receivers")
             if status == "completed" and len(receivers) != 1:
                 raise ProviderError(
                     "completed spawnAgent must have exactly one receiver"
@@ -2151,6 +2371,8 @@ class _AppServerProtocol:
             pending_key = (sender, item_id)
             pending = pending_key in self._pending_spawn_items
             expected_receiver = self._pending_spawn_items.get(pending_key)
+            if status == "inProgress" and pending:
+                raise ProviderError("spawnAgent item was already in progress")
             if expected_receiver is not None and receivers != [expected_receiver]:
                 raise ProviderError(
                     "spawnAgent receiver did not match its pending child thread"
@@ -2159,9 +2381,53 @@ class _AppServerProtocol:
                 receiver is None for receiver in self._pending_spawn_items.values()
             )
             receiver = receivers[0] if receivers else None
-            if status != "inProgress" and pending and expected_receiver is None:
-                if receiver in self._unbound_collab_thread_ids:
-                    self._unbound_collab_thread_ids.remove(receiver)
+            failed_reservation = None
+            if (
+                status == "failed"
+                and receiver is None
+                and expected_receiver is None
+                and self._unbound_collab_thread_ids
+            ):
+                if unbound_slots != 1 or len(self._unbound_collab_thread_ids) != 1:
+                    raise ProviderError(
+                        "receiver-less spawn failure had ambiguous child scope"
+                    )
+                failed_reservation = next(iter(self._unbound_collab_thread_ids))
+            if (
+                lifecycle == "snapshot"
+                and status == "completed"
+                and receiver not in self._collab_thread_ids
+            ):
+                raise ProviderError(
+                    "spawnAgent snapshot lacked matching live terminal history"
+                )
+            if lifecycle != "snapshot" and status != "failed":
+                for claimed_receiver in receivers:
+                    parent_id = self._collab_parent_ids.get(claimed_receiver)
+                    if parent_id is not None and parent_id != sender:
+                        raise ProviderError(
+                            "spawnAgent receiver parent disagrees with its spawning sender"
+                        )
+            if (
+                status == "failed"
+                and receiver is not None
+                and (
+                    receiver in self._validated_collab_thread_ids
+                    or receiver in self._active_collab_thread_ids
+                    or self._collab_turn_ids.get(receiver)
+                )
+            ):
+                raise ProviderError("failed spawn retained an active child")
+            if (
+                lifecycle != "snapshot"
+                and status != "inProgress"
+                and pending
+                and expected_receiver is None
+            ):
+                if status == "failed" and receiver is None:
+                    pass
+                elif receiver in self._unbound_collab_thread_ids:
+                    self._bind_unbound_collab_thread(receiver, sender)
                 elif receiver is not None and receiver in self._collab_thread_ids:
                     raise ProviderError("spawnAgent receiver was already claimed")
                 elif len(self._unbound_collab_thread_ids) >= unbound_slots:
@@ -2173,33 +2439,76 @@ class _AppServerProtocol:
             new_receivers = set(receivers) - self._collab_thread_ids
             if len(self._collab_thread_ids) + len(new_receivers) > _MAX_COLLAB_THREADS:
                 raise ProviderError("collaboration thread count exceeds the limit")
-            if status == "inProgress":
-                if not pending:
-                    if any(
-                        receiver in self._collab_thread_ids for receiver in receivers
-                    ):
-                        raise ProviderError("spawnAgent receiver was already claimed")
-                    if len(self._pending_spawn_items) >= _MAX_COLLAB_THREADS:
-                        raise ProviderError("pending spawn count exceeds the limit")
-                    self._pending_spawn_items[pending_key] = receiver
-                elif expected_receiver is None and receiver is not None:
-                    if receiver in self._unbound_collab_thread_ids:
-                        self._unbound_collab_thread_ids.remove(receiver)
-                    elif receiver in self._collab_thread_ids:
-                        raise ProviderError("spawnAgent receiver was already claimed")
-                    elif len(self._unbound_collab_thread_ids) >= unbound_slots:
-                        raise ProviderError(
-                            "spawnAgent receiver did not match a pending child thread"
-                        )
-                    self._pending_spawn_items[pending_key] = receiver
+            if lifecycle == "snapshot":
+                pass
+            elif status == "inProgress":
+                if any(receiver in self._collab_thread_ids for receiver in receivers):
+                    raise ProviderError("spawnAgent receiver was already claimed")
+                if len(self._pending_spawn_items) >= _MAX_COLLAB_THREADS:
+                    raise ProviderError("pending spawn count exceeds the limit")
+                self._pending_spawn_items[pending_key] = receiver
             else:
                 self._pending_spawn_items.pop(pending_key, None)
-            self._collab_thread_ids.update(receivers)
+            if lifecycle == "snapshot":
+                pass
+            elif status == "failed":
+                failed_receivers = set(receivers)
+                if failed_reservation is not None:
+                    failed_receivers.add(failed_reservation)
+                for failed_receiver in failed_receivers:
+                    self._failed_collab_thread_ids.add(failed_receiver)
+                    self._unbound_collab_thread_ids.discard(failed_receiver)
+                    self._collab_thread_ids.discard(failed_receiver)
+                    self._active_collab_thread_ids.discard(failed_receiver)
+                    self._collab_parent_ids.pop(failed_receiver, None)
+            else:
+                for claimed_receiver in receivers:
+                    self._collab_parent_ids[claimed_receiver] = sender
+                self._collab_thread_ids.update(receivers)
         elif any(
             receiver != self._thread_id and receiver not in self._collab_thread_ids
             for receiver in receivers
         ):
             raise ProviderError("collaboration item targeted an unknown child thread")
+        if lifecycle != "snapshot":
+            for thread_id, agent_status in agent_statuses.items():
+                if (
+                    thread_id == self._thread_id
+                    or thread_id not in self._collab_thread_ids
+                ):
+                    continue
+                if agent_status in {"pendingInit", "running"}:
+                    self._active_collab_thread_ids.add(thread_id)
+                else:
+                    self._active_collab_thread_ids.discard(thread_id)
+            if (
+                lifecycle == "completed"
+                and tool in {"sendInput", "resumeAgent"}
+                and status == "completed"
+            ):
+                self._active_collab_thread_ids.update(
+                    receiver
+                    for receiver in receivers
+                    if receiver != self._thread_id
+                    and receiver in self._collab_thread_ids
+                    and receiver not in agent_statuses
+                )
+        if lifecycle != "snapshot" and status in {"completed", "failed"}:
+            if len(self._terminal_collab_item_ids) >= _MAX_MESSAGES:
+                raise ProviderError(
+                    "terminal collaboration item count exceeds the limit"
+                )
+            self._terminal_collab_item_ids.add(item_scope)
+            self._terminal_collab_history[item_scope] = terminal_item
+        if lifecycle == "started" and tool != "spawnAgent":
+            if (
+                item_scope not in self._active_nonspawn_items
+                and len(self._active_nonspawn_items) >= _MAX_MESSAGES
+            ):
+                raise ProviderError("active collaboration item count exceeds the limit")
+            self._active_nonspawn_items[item_scope] = (tool, tuple(receivers))
+        elif lifecycle == "completed" and tool != "spawnAgent":
+            self._active_nonspawn_items.pop(item_scope, None)
 
     def _validate_completed_turn(
         self, turn: dict[str, Any], owner_thread_id: str
@@ -2210,7 +2519,7 @@ class _AppServerProtocol:
         items = _require_list(
             turn.get("items"), "completed turn items", maximum=_MAX_MESSAGES
         )
-        items_view = turn.get("itemsView", "full")
+        items_view = _require_string(turn.get("itemsView"), "completed turn itemsView")
         if items_view not in {"full", "notLoaded", "summary"}:
             raise ProviderError("completed turn returned an unsupported item view")
         if items_view == "notLoaded" and items:
@@ -2241,6 +2550,8 @@ class _AppServerProtocol:
         )
 
     def _claim_collab_thread_scope(self, thread_id: str) -> bool:
+        if thread_id in self._failed_collab_thread_ids:
+            raise ProviderError("failed spawn child thread ID was reused")
         if thread_id in self._collab_thread_ids:
             return True
         open_spawn_slots = sum(
@@ -2253,6 +2564,15 @@ class _AppServerProtocol:
         self._unbound_collab_thread_ids.add(thread_id)
         self._collab_thread_ids.add(thread_id)
         return True
+
+    def _bind_unbound_collab_thread(self, thread_id: str, sender: str) -> None:
+        parent_id = self._collab_parent_ids.get(thread_id)
+        if parent_id is not None and parent_id != sender:
+            raise ProviderError(
+                "spawnAgent receiver parent disagrees with its spawning sender"
+            )
+        self._collab_parent_ids[thread_id] = sender
+        self._unbound_collab_thread_ids.remove(thread_id)
 
     def _matches_collab_turn(self, params: dict[str, Any]) -> bool:
         thread_id = _require_protocol_id(
@@ -2279,7 +2599,7 @@ class _AppServerProtocol:
             thread_id = _require_protocol_id(
                 params.get("threadId"), "thread/status/changed.threadId"
             )
-            self._validate_thread_status(
+            status_type = self._validate_thread_status(
                 _require_object(params.get("status"), "thread/status/changed.status"),
                 "thread/status/changed.status",
             )
@@ -2291,6 +2611,11 @@ class _AppServerProtocol:
             ):
                 if not self._claim_collab_thread_scope(thread_id):
                     raise ProviderError("thread/status/changed changed thread scope")
+            if thread_id != self._thread_id:
+                if status_type == "active":
+                    self._active_collab_thread_ids.add(thread_id)
+                else:
+                    self._active_collab_thread_ids.discard(thread_id)
             return
         thread_id = params.get("threadId")
         turn_id = params.get("turnId")
@@ -2302,7 +2627,7 @@ class _AppServerProtocol:
                 raise ProviderError(f"{method} targeted an unknown turn")
 
     @staticmethod
-    def _validate_thread_status(status: dict[str, Any], label: str) -> None:
+    def _validate_thread_status(status: dict[str, Any], label: str) -> str:
         status_type = _require_string(status.get("type"), f"{label}.type")
         if status_type == "active":
             _require_exact_keys(
@@ -2325,6 +2650,7 @@ class _AppServerProtocol:
             _require_exact_keys(status, label, required={"type"})
         else:
             raise ProviderError("thread status is unknown")
+        return status_type
 
     @staticmethod
     def _validate_usage(raw: dict[str, Any]) -> dict[str, int]:
@@ -2357,13 +2683,13 @@ class _AppServerProtocol:
         if turn.get("error") is not None:
             raise ProviderError("completed Codex turn included an error")
         items = _require_list(turn.get("items"), "turn.items", maximum=_MAX_MESSAGES)
-        items_view = turn.get("itemsView", "full")
+        items_view = _require_string(turn.get("itemsView"), "turn.itemsView")
         messages: list[dict[str, str | None]]
         if items_view == "notLoaded":
             if items:
                 raise ProviderError("Codex not-loaded turn items must be empty")
             messages = list(self._completed_messages)
-        elif items_view == "full":
+        elif items_view in {"full", "summary"}:
             messages = []
             for index, raw_item in enumerate(items):
                 item = _require_object(raw_item, f"turn.items[{index}]")
@@ -2384,6 +2710,19 @@ class _AppServerProtocol:
                             ),
                         }
                     )
+            if items_view == "summary":
+                if len(items) != 1 or len(messages) != 1:
+                    raise ProviderError(
+                        "Codex summary turn must contain one agent message"
+                    )
+                if (
+                    not self._completed_messages
+                    or messages[0] != self._completed_messages[-1]
+                ):
+                    raise ProviderError(
+                        "Codex summary message disagrees with its completion event"
+                    )
+                messages = list(self._completed_messages)
         else:
             raise ProviderError("Codex turn returned an unsupported item view")
         if not messages or not self._completed_messages:
@@ -2954,6 +3293,7 @@ def _owner_lock(
     except OSError as exc:
         raise ProviderError(f"cannot open {label}: {exc}") from exc
     body_error: BaseException | None = None
+    serialization_timeout: ProviderTimeoutError | None = None
     try:
         identity = _validate_owner_file_descriptor(lock_path, descriptor, label)
         while True:
@@ -2961,27 +3301,36 @@ def _owner_lock(
                 fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
                 break
             except BlockingIOError:
-                _remaining(deadline, f"{label} serialization")
+                try:
+                    _remaining(deadline, f"{label} serialization")
+                except ProviderTimeoutError as exc:
+                    serialization_timeout = exc
+                    break
                 time.sleep(min(0.05, max(0.0, deadline - time.monotonic())))
-        identity = _validate_owner_file_descriptor(lock_path, descriptor, label)
-        try:
-            yield identity
-        except BaseException as exc:
-            body_error = exc
-            raise
-        finally:
+        if serialization_timeout is None:
+            identity = _validate_owner_file_descriptor(lock_path, descriptor, label)
             try:
-                _validate_owner_file_descriptor(lock_path, descriptor, label)
+                yield identity
             except BaseException as exc:
-                if body_error is not None:
-                    body_error.add_note(f"{label} integrity also failed: {exc}")
-                else:
-                    raise
+                body_error = exc
+                raise
+            finally:
+                try:
+                    _validate_owner_file_descriptor(lock_path, descriptor, label)
+                except BaseException as exc:
+                    if body_error is not None:
+                        body_error.add_note(f"{label} integrity also failed: {exc}")
+                    else:
+                        raise
     finally:
         try:
             fcntl.flock(descriptor, fcntl.LOCK_UN)
         finally:
             os.close(descriptor)
+    if serialization_timeout is not None:
+        raise ProviderTimeoutError(
+            str(serialization_timeout), cleanup_confirmed=True
+        ) from serialization_timeout
 
 
 @contextmanager

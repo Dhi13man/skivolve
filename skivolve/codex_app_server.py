@@ -1271,6 +1271,7 @@ class _AppServerProtocol:
             tuple[str, str], tuple[str, tuple[str, ...]]
         ] = {}
         self._unbound_collab_thread_ids: set[str] = set()
+        self._failed_collab_thread_ids: set[str] = set()
         self._retained_text_bytes = 0
         self._last_usage: dict[str, int] | None = None
         self._rate_limits: dict[str, Any] | None = None
@@ -2232,6 +2233,8 @@ class _AppServerProtocol:
             and (sender == self._thread_id or tool == "spawnAgent")
         ):
             raise ProviderError("collaboration receiver thread ids are invalid")
+        if any(receiver in self._failed_collab_thread_ids for receiver in receivers):
+            raise ProviderError("failed spawn child thread ID was reused")
         status = _require_string(item.get("status"), "collaboration item status")
         if status not in {"inProgress", "completed", "failed"}:
             raise ProviderError("collaboration item status is unknown")
@@ -2428,6 +2431,7 @@ class _AppServerProtocol:
                 if failed_reservation is not None:
                     failed_receivers.add(failed_reservation)
                 for failed_receiver in failed_receivers:
+                    self._failed_collab_thread_ids.add(failed_receiver)
                     self._unbound_collab_thread_ids.discard(failed_receiver)
                     self._collab_thread_ids.discard(failed_receiver)
                     self._active_collab_thread_ids.discard(failed_receiver)
@@ -2452,6 +2456,18 @@ class _AppServerProtocol:
                     self._active_collab_thread_ids.add(thread_id)
                 else:
                     self._active_collab_thread_ids.discard(thread_id)
+            if (
+                lifecycle == "completed"
+                and tool in {"sendInput", "resumeAgent"}
+                and status == "completed"
+            ):
+                self._active_collab_thread_ids.update(
+                    receiver
+                    for receiver in receivers
+                    if receiver != self._thread_id
+                    and receiver in self._collab_thread_ids
+                    and receiver not in agent_statuses
+                )
         if lifecycle != "snapshot" and status in {"completed", "failed"}:
             if len(self._terminal_collab_item_ids) >= _MAX_MESSAGES:
                 raise ProviderError(
@@ -2509,6 +2525,8 @@ class _AppServerProtocol:
         )
 
     def _claim_collab_thread_scope(self, thread_id: str) -> bool:
+        if thread_id in self._failed_collab_thread_ids:
+            raise ProviderError("failed spawn child thread ID was reused")
         if thread_id in self._collab_thread_ids:
             return True
         open_spawn_slots = sum(

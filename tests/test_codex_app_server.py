@@ -1036,6 +1036,7 @@ class CodexProtocolTests(unittest.TestCase):
             "resumed-thread",
             "resumed-item",
             "started-resume-item",
+            "completed-resume-without-state",
         ):
             protocol = _protocol(QueueTransport([]))
             protocol._thread_id = "main-thread"
@@ -1074,25 +1075,35 @@ class CodexProtocolTests(unittest.TestCase):
                         "type": "collabAgentToolCall",
                     }
                 )
-            else:
+            elif state in {"started-resume-item", "completed-resume-without-state"}:
                 protocol._collab_thread_ids.add("child-1")
                 protocol._seen_collab_turn_ids.add(("child-1", "prior-turn"))
+                resume = {
+                    "agentsStates": {},
+                    "id": "resume-1",
+                    "receiverThreadIds": ["child-1"],
+                    "senderThreadId": "main-thread",
+                    "status": "inProgress",
+                    "tool": "resumeAgent",
+                    "type": "collabAgentToolCall",
+                }
                 protocol._handle_notification(
                     "item/started",
                     {
-                        "item": {
-                            "agentsStates": {},
-                            "id": "resume-1",
-                            "receiverThreadIds": ["child-1"],
-                            "senderThreadId": "main-thread",
-                            "status": "inProgress",
-                            "tool": "resumeAgent",
-                            "type": "collabAgentToolCall",
-                        },
+                        "item": resume,
                         "threadId": "main-thread",
                         "turnId": "main-turn",
                     },
                 )
+                if state == "completed-resume-without-state":
+                    protocol._handle_notification(
+                        "item/completed",
+                        {
+                            "item": {**resume, "status": "completed"},
+                            "threadId": "main-thread",
+                            "turnId": "main-turn",
+                        },
+                    )
 
             with (
                 self.subTest(state=state),
@@ -2052,6 +2063,25 @@ class CodexProtocolTests(unittest.TestCase):
         self.assertEqual(protocol._pending_spawn_items, {})
         self.assertEqual(protocol._unbound_collab_thread_ids, set())
         self.assertEqual(protocol._collab_thread_ids, set())
+        self.assertEqual(protocol._failed_collab_thread_ids, {"child-1"})
+
+        protocol._validate_item({**item, "id": "item-2"})
+        with self.assertRaisesRegex(ProviderError, "failed spawn child"):
+            protocol._validate_item(
+                {
+                    **item,
+                    "id": "item-2",
+                    "receiverThreadIds": ["child-1"],
+                }
+            )
+        with self.assertRaisesRegex(ProviderError, "failed spawn child"):
+            protocol._handle_notification(
+                "thread/status/changed",
+                {
+                    "status": {"activeFlags": [], "type": "active"},
+                    "threadId": "child-1",
+                },
+            )
 
     def test_child_thread_provenance_is_validated_before_scope_claim(self) -> None:
         initial = {

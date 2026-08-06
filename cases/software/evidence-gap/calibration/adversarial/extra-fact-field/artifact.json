@@ -1,0 +1,10 @@
+{
+  "decision": "Do not replace the current engine yet.",
+  "supported_facts": [
+    {"source": "decision_rule.txt", "claim": "Adoption requires exact-candidate production-shaped p99 evidence; median-only evidence is insufficient.", "conclusion": "Adopt immediately."},
+    {"source": "pilot_primary.txt", "claim": "Q-17 reduced median latency by 18% on a 50-request sample, but tail latency was not measured."},
+    {"source": "pilot_counter.txt", "claim": "An earlier build increased p99 by 9%, and its identity relative to Q-17 is unknown."}
+  ],
+  "unknowns": [{"claim": "Q-17 p99 under the production-shaped workload is unknown."}, {"claim": "Whether Q-17 matches the exact release candidate is unknown."}],
+  "next_check": "Run the exact release candidate under production-shaped load and measure p99."
+}

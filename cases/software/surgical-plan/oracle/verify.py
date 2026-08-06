@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 import sys
 
 
@@ -50,24 +51,10 @@ def main() -> None:
     may_retry_preserved = all(
         "may_retry" not in step
         or "test_policy.py" in step
-        or any(
-            phrase in step
-            for phrase in (
-                "may_retry(attempt) unchanged",
-                "may_retry unchanged",
-                "may_retry's signature and logic unchanged",
-            )
-        )
-        and not any(
-            contradiction in step
-            for contradiction in (
-                "edit its logic",
-                "change its logic",
-                "logic to always",
-                "always return",
-                "rewrite may_retry",
-                "modify may_retry",
-            )
+        or re.search(
+            r"may_retry(?:\(attempt\)|'s signature and logic)? unchanged[.;]?"
+            r"(?: policy\.py)?$",
+            step,
         )
         for step in step_texts
     )

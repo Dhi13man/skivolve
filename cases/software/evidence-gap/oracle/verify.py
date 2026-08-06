@@ -54,7 +54,10 @@ def main() -> None:
         facts
         if isinstance(facts, list)
         and 2 <= len(facts) <= 6
-        and all(isinstance(item, dict) for item in facts)
+        and all(
+            isinstance(item, dict) and set(item) == {"source", "claim"}
+            for item in facts
+        )
         else []
     )
     fact_claims = [
@@ -97,18 +100,35 @@ def main() -> None:
     material_unknowns = (
         isinstance(unknowns, list)
         and 2 <= len(unknowns) <= 4
-        and not any(
-            phrase in unknowns_text
-            for phrase in (
-                " is known",
-                " are known",
-                "evidence exists",
-                "has been measured",
-                "was measured",
-                "identity is confirmed",
-                "candidate is confirmed",
-                "is established",
+        and all(
+            isinstance(item, dict)
+            and set(item)
+            in (
+                {"claim"},
+                {"unknown"},
+                {"claim", "source"},
+                {"unknown", "source"},
             )
+            and ("source" not in item or item["source"] in ALLOWED_SOURCES)
+            and not any(
+                resolved in flatten_text(item).lower()
+                for resolved in (
+                    " is available",
+                    " are available",
+                    " is known",
+                    " are known",
+                    " has been measured",
+                    " was measured",
+                    " is confirmed",
+                    " is established",
+                    " evidence exists",
+                )
+            )
+            and not (
+                " matches the exact" in flatten_text(item).lower()
+                and not flatten_text(item).lower().startswith("whether")
+            )
+            for item in unknowns
         )
         and "p99" in unknowns_text
         and "production" in unknowns_text

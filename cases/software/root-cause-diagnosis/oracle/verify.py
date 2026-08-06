@@ -179,10 +179,9 @@ def main() -> None:
         phrase in unverified
         for phrase in (
             "not supplied",
-            "not available",
-            "unknown",
-            "unverified",
-            "missing",
+            "was not supplied",
+            "were not supplied",
+            "is not supplied",
         )
     ) or (
         unverified.startswith("no ")

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 import sys
 
 
@@ -29,22 +30,13 @@ def main() -> None:
 
     alternatives = question.removesuffix("?").split(" or ")
     preserves_v3 = [
-        any(
-            phrase in alternative
-            for phrase in (
-                "keep v3",
-                "v3 keep",
-                "preserve v3",
-                "retain v3",
-                "v3 retain",
-                "v3 remain stable",
-                "continue receiving v3",
-                "serialization keep v3",
+        bool(
+            re.match(
+                r"should (?:(?:the owner )?(?:preserve|keep|retain) v3|"
+                r"v3 (?:keep|retain|remain stable)|new clients continue receiving v3|"
+                r"serialization keep v3)",
+                alternative,
             )
-        )
-        and not any(
-            negation in alternative
-            for negation in (" not ", "do not", "don't", "never")
         )
         for alternative in alternatives
     ]

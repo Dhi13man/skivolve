@@ -2069,13 +2069,7 @@ class _AppServerProtocol:
                     raise ProviderError(
                         "spawnAgent receiver did not match a pending child thread"
                     )
-            elif (
-                not pending
-                and status != "inProgress"
-                and any(
-                    receiver not in self._collab_thread_ids for receiver in receivers
-                )
-            ):
+            elif not pending and status != "inProgress" and lifecycle != "snapshot":
                 raise ProviderError("spawnAgent completed without a pending child")
             new_receivers = set(receivers) - self._collab_thread_ids
             if len(self._collab_thread_ids) + len(new_receivers) > _MAX_COLLAB_THREADS:

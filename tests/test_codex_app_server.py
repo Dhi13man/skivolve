@@ -1397,6 +1397,37 @@ class CodexProtocolTests(unittest.TestCase):
                 self.assertEqual(protocol._pending_spawn_items, expected_pending)
                 self.assertEqual(protocol._collab_thread_ids, set())
 
+    def test_live_terminal_spawn_requires_a_pending_start(self) -> None:
+        base = {
+            "agentsStates": {},
+            "id": "spawn-1",
+            "senderThreadId": "thread-1",
+            "tool": "spawnAgent",
+            "type": "collabAgentToolCall",
+        }
+        for status, receivers in (("failed", []), ("completed", ["child-1"])):
+            protocol = _protocol(QueueTransport([]))
+            protocol._thread_id = "thread-1"
+            protocol._turn_id = "turn-1"
+            protocol._collab_thread_ids.add("child-1")
+            item = {
+                **base,
+                "receiverThreadIds": receivers,
+                "status": status,
+            }
+            with self.subTest(status=status):
+                with self.assertRaisesRegex(ProviderError, "without a pending child"):
+                    protocol._handle_notification(
+                        "item/completed",
+                        {
+                            "item": item,
+                            "threadId": "thread-1",
+                            "turnId": "turn-1",
+                        },
+                    )
+
+        protocol._validate_item(item, lifecycle="snapshot")
+
     def test_spawn_agent_bounds_total_child_thread_scope(self) -> None:
         protocol = _protocol(QueueTransport([]))
         protocol._thread_id = "thread-1"

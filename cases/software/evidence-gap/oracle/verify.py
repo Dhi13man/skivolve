@@ -137,13 +137,42 @@ def main() -> None:
     material_unknowns = (
         isinstance(unknowns, list)
         and 2 <= len(unknowns) <= 4
+        and not any(
+            phrase in unknowns_text
+            for phrase in (
+                " is known",
+                " are known",
+                "evidence exists",
+                "has been measured",
+                "was measured",
+                "identity is confirmed",
+                "candidate is confirmed",
+                "is established",
+            )
+        )
         and "p99" in unknowns_text
         and "production" in unknowns_text
         and any(token in unknowns_text for token in ("q-17", "release candidate"))
         and any(word in unknowns_text for word in ("whether", "identity", "matches"))
     )
     resolving_check = (
-        "p99" in next_check
+        not any(
+            phrase in next_check
+            for phrase in (
+                "do not run",
+                "do not measure",
+                "don't run",
+                "don't measure",
+                "not run",
+                "not measure",
+                "avoid running",
+                "avoid measuring",
+                "skip",
+                "no need to run",
+                "without measuring",
+            )
+        )
+        and "p99" in next_check
         and "production" in next_check
         and any(
             token in next_check

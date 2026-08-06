@@ -33,8 +33,13 @@ def main() -> None:
         and 2 <= len(steps) <= 3
         and "policy.py" in steps_text
         and "max_retries" in steps_text
-        and "3" in steps_text
-        and "4" in steps_text
+        and any(
+            transition in steps_text
+            for transition in (
+                "max_retries from 3 to 4",
+                "max_retries = 3 to max_retries = 4",
+            )
+        )
         and "may_retry" in steps_text
         and any(word in steps_text for word in ("unchanged", "preserve", "keep"))
     )

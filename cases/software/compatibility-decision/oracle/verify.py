@@ -72,7 +72,21 @@ def main() -> None:
                 "south/importer still needs legacy accountid and createdat",
             )
         )
-        and any(word in reason for word in ("owner", "date", "timeline"))
+        and any(
+            phrase in reason
+            for phrase in (
+                "no migration owner",
+                "without a migration owner",
+                "without an approved migration owner",
+                "without an identified migration owner",
+                "has no recorded migration owner",
+                "without a recorded migration owner",
+                "owner is unknown",
+                "owner remains unknown",
+                "owner is missing",
+            )
+        )
+        and any(word in reason for word in ("date", "timeline", "schedule"))
         and any(
             phrase in reason
             for phrase in (

@@ -28,6 +28,34 @@ def main() -> None:
     verification = flatten_text(values.get("verification", "")).lower()
     unverified = flatten_text(values.get("unverified", "")).lower()
     diagnosis = f"{verdict} {cause} {evidence_text}"
+    diagnosis_plain = diagnosis.replace("`", "").replace('"', "").replace("'", "")
+    verification_plain = verification.replace("`", "").replace('"', "").replace("'", "")
+
+    zero_observed_ok = any(
+        phrase in diagnosis_plain
+        for phrase in (
+            "outcome(0) returns ok",
+            "outcome(0)=ok",
+            "attempts=0 is classified as ok",
+            "attempts=0 as successful",
+            "zero attempts are classified as successful",
+            "initial attempt (0) as successful",
+            "initial attempt enters the ok branch",
+        )
+    ) or (
+        "attempts=0" in diagnosis_plain
+        and any(
+            phrase in diagnosis_plain
+            for phrase in (
+                "observed ok",
+                "observed=ok",
+                "observes ok",
+                "returns ok",
+                "to ok",
+                "ok branch",
+            )
+        )
+    )
 
     concrete_cause = (
         any(word in verdict for word in ("fail", "bug", "zero"))
@@ -36,7 +64,7 @@ def main() -> None:
             token in diagnosis
             for token in (">= 0", ">=0", "nonnegative", "includes zero")
         )
-        and (("ok" in diagnosis and "retry" in diagnosis) or "successful" in diagnosis)
+        and zero_observed_ok
     )
     bounded_evidence = isinstance(evidence, list) and 2 <= len(evidence) <= 3
     line_evidence = (
@@ -66,13 +94,21 @@ def main() -> None:
         )
         and (
             (
-                "outcome(0)" in verification
+                "outcome(0)" in verification_plain
                 and any(
-                    result in verification
-                    for result in ("observed", "results", "confirmed", "=")
+                    result in verification_plain
+                    for result in (
+                        "observed ok",
+                        "outcome(0)=ok",
+                        "outcome(0) is ok",
+                        "results were ok",
+                    )
                 )
             )
-            or ("assertionerror" in verification and "failed" in verification)
+            or (
+                "assertionerror: ok" in verification_plain
+                and "failed" in verification_plain
+            )
         )
     )
     honest_gap = bool(unverified) and any(

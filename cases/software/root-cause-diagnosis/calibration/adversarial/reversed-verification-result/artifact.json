@@ -1,0 +1,10 @@
+{
+  "verdict": "failed",
+  "root_cause": "The condition attempts >= 0 includes zero, so outcome(0) returns ok instead of the expected retry.",
+  "evidence": [
+    "failure.log:2",
+    "worker.py:2-3"
+  ],
+  "verification": "Executed outcome(0); observed retry instead of ok.",
+  "unverified": "No production traces were supplied."
+}

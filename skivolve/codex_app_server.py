@@ -1662,15 +1662,17 @@ class _AppServerProtocol:
             _require_exact_keys(
                 error,
                 "error notification.error",
-                required={"additionalDetails", "codexErrorInfo", "message"},
+                required={"message"},
+                optional={"additionalDetails", "codexErrorInfo"},
             )
             _require_string(error.get("message"), "error notification.error.message")
-            if not self._matches_turn(params) and not self._matches_collab_turn(params):
+            main_turn = self._matches_turn(params)
+            if not main_turn and not self._matches_collab_turn(params):
                 raise ProviderError("Codex error notification changed turn scope")
             will_retry = params.get("willRetry")
             if type(will_retry) is not bool:
                 raise ProviderError("Codex error notification has invalid retry state")
-            if will_retry:
+            if will_retry or not main_turn:
                 return
             raise ProviderError("Codex reported a turn error")
         if method == "account/rateLimits/updated":
@@ -1925,6 +1927,12 @@ class _AppServerProtocol:
             raise ProviderError(
                 "collaboration reasoningEffort must be a non-empty string or null"
             )
+        if item.get("model") not in {None, self._model}:
+            raise ProviderError("collaboration model differs from the pinned model")
+        if item.get("reasoningEffort") not in {None, self._reasoning_effort}:
+            raise ProviderError(
+                "collaboration reasoningEffort differs from the pinned reasoning effort"
+            )
         states = _require_object(item.get("agentsStates"), "collaboration agent states")
         if len(states) > _MAX_COLLAB_THREADS:
             raise ProviderError("collaboration agent-state count exceeds the limit")
@@ -1970,6 +1978,8 @@ class _AppServerProtocol:
                 raise ProviderError(
                     "completed spawnAgent must have exactly one receiver"
                 )
+            if len(receivers) > 1:
+                raise ProviderError("spawnAgent must have at most one receiver")
             pending_key = (sender, item_id)
             pending = pending_key in self._pending_spawn_items
             expected_receiver = self._pending_spawn_items.get(pending_key)

@@ -764,19 +764,15 @@ class CodexProtocolTests(unittest.TestCase):
         protocol._thread_id = "thread-1"
         protocol._turn_id = "turn-1"
         valid = {
-            "error": {
-                "additionalDetails": None,
-                "codexErrorInfo": None,
-                "message": "untrusted",
-            },
+            "error": {"message": "untrusted"},
             "threadId": "thread-1",
             "turnId": "turn-1",
             "willRetry": True,
         }
         invalid = {
-            "missing error field": {
+            "missing message": {
                 **valid,
-                "error": {"codexErrorInfo": None, "message": "untrusted"},
+                "error": {"codexErrorInfo": None},
             },
             "invalid message": {
                 **valid,
@@ -786,10 +782,47 @@ class CodexProtocolTests(unittest.TestCase):
             "wrong turn": {**valid, "turnId": "turn-2"},
         }
 
+        protocol._handle_notification("error", valid)
         for label, params in invalid.items():
             with self.subTest(label=label):
                 with self.assertRaises(ProviderError):
                     protocol._handle_notification("error", params)
+
+    def test_non_retryable_child_error_does_not_abort_main_turn(self) -> None:
+        protocol = _protocol(QueueTransport([]))
+        protocol._thread_id = "main-thread"
+        protocol._turn_id = "main-turn"
+        protocol._collab_thread_ids.add("child-1")
+        protocol._collab_turn_ids["child-1"] = {"child-turn"}
+
+        protocol._handle_notification(
+            "error",
+            {
+                "error": {
+                    "additionalDetails": None,
+                    "codexErrorInfo": None,
+                    "message": "untrusted child failure",
+                },
+                "threadId": "child-1",
+                "turnId": "child-turn",
+                "willRetry": False,
+            },
+        )
+        protocol._handle_notification(
+            "turn/completed",
+            {
+                "threadId": "child-1",
+                "turn": {
+                    "id": "child-turn",
+                    "items": [],
+                    "itemsView": "notLoaded",
+                    "status": "failed",
+                },
+            },
+        )
+
+        self.assertIsNone(protocol._turn_completed)
+        self.assertEqual(protocol._collab_turn_ids["child-1"], set())
 
     def test_missing_usage_rejects_completed_turn(self) -> None:
         transport = ScriptedTransport(Path("/runtime/work"), omit_usage=True)
@@ -1289,6 +1322,38 @@ class CodexProtocolTests(unittest.TestCase):
                 )
                 self.assertEqual(protocol._collab_thread_ids, set())
 
+    def test_spawn_rejects_multiple_receivers_before_successful_completion(
+        self,
+    ) -> None:
+        initial = {
+            "agentsStates": {},
+            "id": "item-1",
+            "receiverThreadIds": [],
+            "senderThreadId": "thread-1",
+            "status": "inProgress",
+            "tool": "spawnAgent",
+            "type": "collabAgentToolCall",
+        }
+        for status in ("inProgress", "failed"):
+            protocol = _protocol(QueueTransport([]))
+            protocol._thread_id = "thread-1"
+            if status == "failed":
+                protocol._validate_item(initial)
+            with self.subTest(status=status):
+                with self.assertRaisesRegex(ProviderError, "at most one receiver"):
+                    protocol._validate_item(
+                        {
+                            **initial,
+                            "receiverThreadIds": ["child-1", "child-2"],
+                            "status": status,
+                        }
+                    )
+                expected_pending = (
+                    {("thread-1", "item-1"): None} if status == "failed" else {}
+                )
+                self.assertEqual(protocol._pending_spawn_items, expected_pending)
+                self.assertEqual(protocol._collab_thread_ids, set())
+
     def test_spawn_agent_bounds_total_child_thread_scope(self) -> None:
         protocol = _protocol(QueueTransport([]))
         protocol._thread_id = "thread-1"
@@ -1579,6 +1644,41 @@ class CodexProtocolTests(unittest.TestCase):
         protocol._thread_id = "thread-1"
         with self.assertRaisesRegex(ProviderError, "non-empty string or null"):
             protocol._validate_item({**base, "reasoningEffort": ""})
+
+    def test_collaboration_model_metadata_matches_pinned_configuration(self) -> None:
+        base = {
+            "agentsStates": {},
+            "id": "item-1",
+            "receiverThreadIds": [],
+            "senderThreadId": "thread-1",
+            "status": "inProgress",
+            "tool": "spawnAgent",
+            "type": "collabAgentToolCall",
+        }
+        mismatches = (
+            ("model", "other-model", "pinned model"),
+            ("reasoningEffort", "high", "pinned reasoning effort"),
+        )
+        for field, value, message in mismatches:
+            protocol = _protocol(QueueTransport([]))
+            protocol._thread_id = "thread-1"
+            with (
+                self.subTest(field=field),
+                self.assertRaisesRegex(ProviderError, message),
+            ):
+                protocol._validate_item({**base, field: value})
+            self.assertEqual(protocol._pending_spawn_items, {})
+
+        protocol = _protocol(QueueTransport([]))
+        protocol._thread_id = "thread-1"
+        protocol._validate_item(
+            {
+                **base,
+                "model": "gpt-5.6-luna",
+                "reasoningEffort": "low",
+            }
+        )
+        self.assertEqual(protocol._pending_spawn_items, {("thread-1", "item-1"): None})
 
     def test_collaboration_sender_and_lifecycle_match_event_envelope(self) -> None:
         protocol = _protocol(QueueTransport([]))

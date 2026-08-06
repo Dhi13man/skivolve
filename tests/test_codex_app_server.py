@@ -1709,6 +1709,51 @@ class CodexProtocolTests(unittest.TestCase):
         protocol._handle_notification("thread/started", {"thread": _child_thread()})
         self.assertEqual(protocol._validated_collab_thread_ids, {"child-1"})
 
+    def test_child_thread_parent_must_own_a_pending_spawn(self) -> None:
+        protocol = _protocol(QueueTransport([]))
+        protocol._thread_id = "thread-1"
+        protocol._session_id = "session-1"
+        protocol._collab_thread_ids.add("child-a")
+        protocol._validated_collab_thread_ids.add("child-a")
+        protocol._validate_item(
+            {
+                "agentsStates": {},
+                "id": "spawn-a",
+                "receiverThreadIds": [],
+                "senderThreadId": "child-a",
+                "status": "inProgress",
+                "tool": "spawnAgent",
+                "type": "collabAgentToolCall",
+            }
+        )
+
+        with self.assertRaisesRegex(ProviderError, "parent-owned pending spawn"):
+            protocol._handle_notification("thread/started", {"thread": _child_thread()})
+        self.assertNotIn("child-1", protocol._validated_collab_thread_ids)
+
+        root_spawn = {
+            "agentsStates": {},
+            "id": "spawn-root",
+            "receiverThreadIds": [],
+            "senderThreadId": "thread-1",
+            "status": "inProgress",
+            "tool": "spawnAgent",
+            "type": "collabAgentToolCall",
+        }
+        protocol._validate_item(root_spawn)
+        protocol._handle_notification("thread/started", {"thread": _child_thread()})
+        with self.assertRaisesRegex(ProviderError, "spawning sender"):
+            protocol._validate_item(
+                {
+                    **root_spawn,
+                    "agentsStates": {"child-1": {"status": "running"}},
+                    "id": "spawn-a",
+                    "receiverThreadIds": ["child-1"],
+                    "senderThreadId": "child-a",
+                    "status": "completed",
+                }
+            )
+
     def test_parallel_pending_spawns_accept_cross_ordered_child_announcements(
         self,
     ) -> None:
@@ -1974,7 +2019,11 @@ class CodexProtocolTests(unittest.TestCase):
         protocol._thread_id = "main-thread"
         protocol._turn_id = "main-turn"
         protocol._collab_thread_ids.add("child-1")
-        protocol._collab_turn_ids["child-1"] = {"child-turn"}
+        protocol._validated_collab_thread_ids.add("child-1")
+        protocol._handle_notification(
+            "turn/started",
+            {"threadId": "child-1", "turn": {"id": "child-turn"}},
+        )
         completed = {
             "threadId": "child-1",
             "turn": {
@@ -1986,6 +2035,11 @@ class CodexProtocolTests(unittest.TestCase):
         }
         protocol._handle_notification("turn/completed", completed)
 
+        with self.assertRaisesRegex(ProviderError, "more than once"):
+            protocol._handle_notification(
+                "turn/started",
+                {"threadId": "child-1", "turn": {"id": "child-turn"}},
+            )
         with self.assertRaisesRegex(ProviderError, "unknown child turn"):
             protocol._handle_notification("turn/completed", completed)
         with self.assertRaisesRegex(ProviderError, "unknown turn"):

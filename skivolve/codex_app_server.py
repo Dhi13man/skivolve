@@ -1255,9 +1255,10 @@ class _AppServerProtocol:
         self._completed_messages: list[dict[str, str | None]] = []
         self._collab_thread_ids: set[str] = set()
         self._validated_collab_thread_ids: set[str] = set()
+        self._collab_parent_ids: dict[str, str] = {}
         self._collab_turn_ids: dict[str, set[str]] = {}
+        self._seen_collab_turn_ids: set[tuple[str, str]] = set()
         self._collab_turn_usage: dict[tuple[str, str], dict[str, int]] = {}
-        self._collab_turn_count = 0
         self._pending_spawn_items: dict[tuple[str, str], str | None] = {}
         self._unbound_collab_thread_ids: set[str] = set()
         self._retained_text_bytes = 0
@@ -1875,9 +1876,20 @@ class _AppServerProtocol:
                     raise ProviderError(
                         "Codex child thread provenance differs from the root request"
                     )
+                if not any(
+                    sender == parent_id and receiver in {None, announced}
+                    for (
+                        sender,
+                        _item_id,
+                    ), receiver in self._pending_spawn_items.items()
+                ):
+                    raise ProviderError(
+                        "Codex child thread lacked a parent-owned pending spawn"
+                    )
                 if not self._claim_collab_thread_scope(announced):
                     raise ProviderError("Codex thread announcement changed scope")
                 self._validated_collab_thread_ids.add(announced)
+                self._collab_parent_ids[announced] = parent_id
                 return
             if self._announced_thread_id is not None:
                 raise ProviderError("Codex announced more than one thread")
@@ -1897,12 +1909,13 @@ class _AppServerProtocol:
                         "Codex child turn preceded its provenance announcement"
                     )
                 turns = self._collab_turn_ids.setdefault(thread_id, set())
-                if announced in turns:
+                turn_scope = (thread_id, announced)
+                if turn_scope in self._seen_collab_turn_ids:
                     raise ProviderError("Codex announced a child turn more than once")
-                if self._collab_turn_count >= _MAX_COLLAB_TURNS:
+                if len(self._seen_collab_turn_ids) >= _MAX_COLLAB_TURNS:
                     raise ProviderError("collaboration turn count exceeds the limit")
                 turns.add(announced)
-                self._collab_turn_count += 1
+                self._seen_collab_turn_ids.add(turn_scope)
                 return
             if self._announced_turn_id is not None:
                 raise ProviderError("Codex announced more than one turn")
@@ -2161,7 +2174,7 @@ class _AppServerProtocol:
             receiver = receivers[0] if receivers else None
             if status != "inProgress" and pending and expected_receiver is None:
                 if receiver in self._unbound_collab_thread_ids:
-                    self._unbound_collab_thread_ids.remove(receiver)
+                    self._bind_unbound_collab_thread(receiver, sender)
                 elif receiver is not None and receiver in self._collab_thread_ids:
                     raise ProviderError("spawnAgent receiver was already claimed")
                 elif len(self._unbound_collab_thread_ids) >= unbound_slots:
@@ -2184,7 +2197,7 @@ class _AppServerProtocol:
                     self._pending_spawn_items[pending_key] = receiver
                 elif expected_receiver is None and receiver is not None:
                     if receiver in self._unbound_collab_thread_ids:
-                        self._unbound_collab_thread_ids.remove(receiver)
+                        self._bind_unbound_collab_thread(receiver, sender)
                     elif receiver in self._collab_thread_ids:
                         raise ProviderError("spawnAgent receiver was already claimed")
                     elif len(self._unbound_collab_thread_ids) >= unbound_slots:
@@ -2253,6 +2266,14 @@ class _AppServerProtocol:
         self._unbound_collab_thread_ids.add(thread_id)
         self._collab_thread_ids.add(thread_id)
         return True
+
+    def _bind_unbound_collab_thread(self, thread_id: str, sender: str) -> None:
+        parent_id = self._collab_parent_ids.get(thread_id)
+        if parent_id is not None and parent_id != sender:
+            raise ProviderError(
+                "spawnAgent receiver parent disagrees with its spawning sender"
+            )
+        self._unbound_collab_thread_ids.remove(thread_id)
 
     def _matches_collab_turn(self, params: dict[str, Any]) -> bool:
         thread_id = _require_protocol_id(

@@ -23,7 +23,13 @@ def main() -> None:
     values = artifact or {}
     steps = values.get("steps")
     steps_text = flatten_text(steps).lower().replace("`", "")
-    verification = flatten_text(values.get("verification", "")).lower()
+    verification_value = values.get("verification", "")
+    command_value = (
+        verification_value.get("command", "")
+        if isinstance(verification_value, dict)
+        else verification_value
+    )
+    command = flatten_text(command_value).lower().replace("`", "")
     non_goals = values.get("non_goals")
     non_goals_text = flatten_text(non_goals).lower()
     plan_scope = f"{steps_text} {non_goals_text}"
@@ -60,9 +66,22 @@ def main() -> None:
         )
     )
     native_command = (
-        ("python " in verification or "python3 " in verification)
-        and "test_policy.py" in verification
-        and ("unittest" in verification or "python3 test_policy.py" in verification)
+        command.startswith(
+            (
+                "python ",
+                "python3 ",
+                "run python ",
+                "run python3 ",
+                "execute python ",
+                "execute python3 ",
+            )
+        )
+        and "test_policy.py" in command
+        and ("unittest" in command or "python3 test_policy.py" in command)
+        and not any(
+            phrase in command
+            for phrase in ("do not", "don't", "not run", "unnecessary", "skip ")
+        )
     )
     bounded_non_goals = (
         isinstance(non_goals, list)

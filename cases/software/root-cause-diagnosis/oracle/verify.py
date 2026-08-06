@@ -111,10 +111,34 @@ def main() -> None:
             )
         )
     )
-    honest_gap = bool(unverified) and any(
+    gap_subject = any(
         word in unverified
-        for word in ("not supplied", "no ", "unknown", "unverified", "missing")
+        for word in (
+            "test",
+            "suite",
+            "specification",
+            "check",
+            "command",
+            "source",
+            "trace",
+            "coverage",
+            "behavior",
+        )
     )
+    gap_missing = any(
+        phrase in unverified
+        for phrase in (
+            "not supplied",
+            "not available",
+            "unknown",
+            "unverified",
+            "missing",
+        )
+    ) or (
+        unverified.startswith("no ")
+        and any(word in unverified for word in ("supplied", "available", "establishes"))
+    )
+    honest_gap = bool(unverified) and gap_subject and gap_missing
     restrained = (
         artifact is not None
         and set(artifact) == EXPECTED_KEYS

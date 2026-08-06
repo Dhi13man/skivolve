@@ -1,0 +1,20 @@
+{
+  "level": "surgical",
+  "non_goals": [
+    "No new files, dependencies, configuration, or tests.",
+    "No changes to retry logic beyond the constant value.",
+    "No documentation, refactoring, or broader API changes.",
+    "Do not edit the fixture during this planning pass."
+  ],
+  "steps": [
+    {
+      "edit": "Change MAX_RETRIES from 3 to 4; leave may_retry's signature and logic unchanged.",
+      "file": "policy.py"
+    },
+    {
+      "edit": "Update the focused boundary assertions so may_retry(3) is true and may_retry(4) is false.",
+      "file": "test_policy.py"
+    }
+  ],
+  "verification": "Do not run python3 test_policy.py; invoking unittest is unnecessary."
+}

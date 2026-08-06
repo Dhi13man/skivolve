@@ -161,6 +161,7 @@ def _model(model: str, efforts: tuple[str, ...]) -> dict[str, Any]:
 def _child_thread(
     thread_id: str = "child-1",
     *,
+    depth: int = 1,
     parent_id: str = "thread-1",
     session_id: str = "session-1",
 ) -> dict[str, Any]:
@@ -179,7 +180,7 @@ def _child_thread(
         "source": {
             "subAgent": {
                 "thread_spawn": {
-                    "depth": 1,
+                    "depth": depth,
                     "parent_thread_id": parent_id,
                 }
             }
@@ -2117,6 +2118,64 @@ class CodexProtocolTests(unittest.TestCase):
                     "status": "completed",
                 }
             )
+
+    def test_child_thread_depth_matches_its_parent_chain(self) -> None:
+        protocol = _protocol(QueueTransport([]))
+        protocol._thread_id = "thread-1"
+        protocol._session_id = "session-1"
+        spawn = {
+            "agentsStates": {},
+            "id": "spawn-root",
+            "receiverThreadIds": [],
+            "senderThreadId": "thread-1",
+            "status": "inProgress",
+            "tool": "spawnAgent",
+            "type": "collabAgentToolCall",
+        }
+        protocol._validate_item(spawn)
+        with self.assertRaisesRegex(ProviderError, "provenance"):
+            protocol._handle_notification(
+                "thread/started",
+                {"thread": _child_thread(depth=_MAX_COLLAB_THREADS)},
+            )
+        self.assertEqual(protocol._collab_depths, {})
+
+        protocol._handle_notification("thread/started", {"thread": _child_thread()})
+        protocol._validate_item(
+            {
+                **spawn,
+                "agentsStates": {"child-1": {"status": "running"}},
+                "receiverThreadIds": ["child-1"],
+                "status": "completed",
+            }
+        )
+        nested_spawn = {
+            **spawn,
+            "id": "spawn-nested",
+            "senderThreadId": "child-1",
+        }
+        protocol._validate_item(nested_spawn)
+        with self.assertRaisesRegex(ProviderError, "provenance"):
+            protocol._handle_notification(
+                "thread/started",
+                {
+                    "thread": _child_thread(
+                        "child-2",
+                        parent_id="child-1",
+                    )
+                },
+            )
+        protocol._handle_notification(
+            "thread/started",
+            {
+                "thread": _child_thread(
+                    "child-2",
+                    depth=2,
+                    parent_id="child-1",
+                )
+            },
+        )
+        self.assertEqual(protocol._collab_depths, {"child-1": 1, "child-2": 2})
 
     def test_child_thread_parent_matches_preannouncement_spawn_binding(self) -> None:
         protocol = _protocol(QueueTransport([]))

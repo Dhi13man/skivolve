@@ -1256,6 +1256,7 @@ class _AppServerProtocol:
         self._collab_thread_ids: set[str] = set()
         self._validated_collab_thread_ids: set[str] = set()
         self._collab_parent_ids: dict[str, str] = {}
+        self._collab_depths: dict[str, int] = {}
         self._collab_turn_ids: dict[str, set[str]] = {}
         self._active_collab_thread_ids: set[str] = set()
         self._seen_collab_turn_ids: set[tuple[str, str]] = set()
@@ -1852,6 +1853,11 @@ class _AppServerProtocol:
                     "child thread.source parent thread id",
                 )
                 bound_parent_id = self._collab_parent_ids.get(announced)
+                parent_depth = (
+                    0
+                    if parent_id == self._thread_id
+                    else self._collab_depths.get(parent_id)
+                )
                 depth = _optional_bounded_integer(
                     spawn.get("depth"),
                     "child thread.source depth",
@@ -1872,6 +1878,8 @@ class _AppServerProtocol:
                     or updated_at is None
                     or updated_at < created_at
                     or depth is None
+                    or parent_depth is None
+                    or depth != parent_depth + 1
                     or self._session_id is None
                     or session_id != self._session_id
                     or parent_id != source_parent_id
@@ -1924,6 +1932,7 @@ class _AppServerProtocol:
                     raise ProviderError("Codex thread announcement changed scope")
                 self._validated_collab_thread_ids.add(announced)
                 self._collab_parent_ids[announced] = parent_id
+                self._collab_depths[announced] = depth
                 return
             if self._announced_thread_id is not None:
                 raise ProviderError("Codex announced more than one thread")

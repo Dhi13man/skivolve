@@ -1322,6 +1322,38 @@ class CodexProtocolTests(unittest.TestCase):
                 )
                 self.assertEqual(protocol._collab_thread_ids, set())
 
+    def test_spawn_rejects_multiple_receivers_before_successful_completion(
+        self,
+    ) -> None:
+        initial = {
+            "agentsStates": {},
+            "id": "item-1",
+            "receiverThreadIds": [],
+            "senderThreadId": "thread-1",
+            "status": "inProgress",
+            "tool": "spawnAgent",
+            "type": "collabAgentToolCall",
+        }
+        for status in ("inProgress", "failed"):
+            protocol = _protocol(QueueTransport([]))
+            protocol._thread_id = "thread-1"
+            if status == "failed":
+                protocol._validate_item(initial)
+            with self.subTest(status=status):
+                with self.assertRaisesRegex(ProviderError, "at most one receiver"):
+                    protocol._validate_item(
+                        {
+                            **initial,
+                            "receiverThreadIds": ["child-1", "child-2"],
+                            "status": status,
+                        }
+                    )
+                expected_pending = (
+                    {("thread-1", "item-1"): None} if status == "failed" else {}
+                )
+                self.assertEqual(protocol._pending_spawn_items, expected_pending)
+                self.assertEqual(protocol._collab_thread_ids, set())
+
     def test_spawn_agent_bounds_total_child_thread_scope(self) -> None:
         protocol = _protocol(QueueTransport([]))
         protocol._thread_id = "thread-1"

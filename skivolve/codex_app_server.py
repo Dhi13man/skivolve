@@ -1978,6 +1978,8 @@ class _AppServerProtocol:
                 raise ProviderError(
                     "completed spawnAgent must have exactly one receiver"
                 )
+            if len(receivers) > 1:
+                raise ProviderError("spawnAgent must have at most one receiver")
             pending_key = (sender, item_id)
             pending = pending_key in self._pending_spawn_items
             expected_receiver = self._pending_spawn_items.get(pending_key)

@@ -1247,13 +1247,16 @@ class _AppServerProtocol:
         self._expected_codex_home = expected_codex_home
         self._on_dispatched = on_dispatched
         self._thread_id: str | None = None
+        self._session_id: str | None = None
         self._announced_thread_id: str | None = None
         self._turn_id: str | None = None
         self._announced_turn_id: str | None = None
         self._turn_completed: dict[str, Any] | None = None
         self._completed_messages: list[dict[str, str | None]] = []
         self._collab_thread_ids: set[str] = set()
+        self._validated_collab_thread_ids: set[str] = set()
         self._collab_turn_ids: dict[str, set[str]] = {}
+        self._collab_turn_usage: dict[tuple[str, str], dict[str, int]] = {}
         self._collab_turn_count = 0
         self._pending_spawn_items: dict[tuple[str, str], str | None] = {}
         self._unbound_collab_thread_ids: set[str] = set()
@@ -1278,6 +1281,10 @@ class _AppServerProtocol:
         after_limits = self._read_rate_limits(deadline)
         if self._last_usage is None:
             raise ProviderError("Codex turn omitted last-turn token usage")
+        total_usage = dict(self._last_usage)
+        for child_usage in self._collab_turn_usage.values():
+            for key, value in child_usage.items():
+                total_usage[key] += value
         quota = {
             "before": before_limits,
             "rolling": self._rate_limits,
@@ -1291,11 +1298,11 @@ class _AppServerProtocol:
             "thread_id_sha256": _opaque_sha256(self._thread_id),
             "turn": turn,
             "turn_id_sha256": _opaque_sha256(self._turn_id),
-            "usage": dict(self._last_usage),
+            "usage": dict(total_usage),
         }
         return _TurnOutcome(
             final_output=final_output,
-            tokens=dict(self._last_usage),
+            tokens=total_usage,
             quota=quota,
             raw_response=raw,
         )
@@ -1584,7 +1591,7 @@ class _AppServerProtocol:
         )
         if created_at is None or updated_at is None or updated_at < created_at:
             raise ProviderError("Codex thread timestamps are missing or inconsistent")
-        _require_protocol_id(thread.get("sessionId"), "thread.sessionId")
+        session_id = _require_protocol_id(thread.get("sessionId"), "thread.sessionId")
         status = _require_object(thread.get("status"), "thread.status")
         _require_exact_keys(status, "thread.status", required={"type"})
         if status != {"type": "idle"} or thread.get("preview") != "":
@@ -1618,6 +1625,7 @@ class _AppServerProtocol:
         thread_id = _require_protocol_id(thread.get("id"), "thread.id")
         if self._announced_thread_id not in {None, thread_id}:
             raise ProviderError("Codex thread announcement disagrees with thread/start")
+        self._session_id = session_id
         self._thread_id = thread_id
 
     def _start_turn(self, prompt: str, deadline: float) -> None:
@@ -1787,8 +1795,89 @@ class _AppServerProtocol:
                 thread.get("id"), "thread/started.thread.id"
             )
             if self._thread_id is not None and announced != self._thread_id:
+                if announced in self._validated_collab_thread_ids:
+                    raise ProviderError("Codex announced a child thread more than once")
+                created_at = _optional_bounded_integer(
+                    thread.get("createdAt"), "child thread.createdAt"
+                )
+                updated_at = _optional_bounded_integer(
+                    thread.get("updatedAt"), "child thread.updatedAt"
+                )
+                session_id = _require_protocol_id(
+                    thread.get("sessionId"), "child thread.sessionId"
+                )
+                parent_id = _require_protocol_id(
+                    thread.get("parentThreadId"), "child thread.parentThreadId"
+                )
+                source = _require_object(thread.get("source"), "child thread.source")
+                _require_exact_keys(
+                    source, "child thread.source", required={"subAgent"}
+                )
+                subagent = _require_object(
+                    source.get("subAgent"), "child thread.source.subAgent"
+                )
+                _require_exact_keys(
+                    subagent,
+                    "child thread.source.subAgent",
+                    required={"thread_spawn"},
+                )
+                spawn = _require_object(
+                    subagent.get("thread_spawn"),
+                    "child thread.source.subAgent.thread_spawn",
+                )
+                _require_exact_keys(
+                    spawn,
+                    "child thread.source.subAgent.thread_spawn",
+                    required={"depth", "parent_thread_id"},
+                    optional={"agent_nickname", "agent_path", "agent_role"},
+                )
+                source_parent_id = _require_protocol_id(
+                    spawn.get("parent_thread_id"),
+                    "child thread.source parent thread id",
+                )
+                depth = _optional_bounded_integer(
+                    spawn.get("depth"),
+                    "child thread.source depth",
+                    minimum=1,
+                    maximum=_MAX_COLLAB_THREADS,
+                )
+                self._validate_thread_status(
+                    _require_object(thread.get("status"), "child thread.status"),
+                    "child thread.status",
+                )
+                preview = thread.get("preview")
+                if not isinstance(preview, str):
+                    raise ProviderError("child thread.preview must be a string")
+                if len(preview.encode("utf-8")) > _MAX_RETAINED_TEXT_BYTES:
+                    raise ProviderError("child thread.preview exceeds the byte limit")
+                if (
+                    created_at is None
+                    or updated_at is None
+                    or updated_at < created_at
+                    or depth is None
+                    or self._session_id is None
+                    or session_id != self._session_id
+                    or parent_id != source_parent_id
+                    or (
+                        parent_id != self._thread_id
+                        and parent_id not in self._validated_collab_thread_ids
+                    )
+                    or thread.get("modelProvider") != "openai"
+                    or thread.get("cliVersion") != self._locked_thread_cli_version
+                    or thread.get("cwd") != str(self._workspace)
+                    or thread.get("ephemeral") is not True
+                    or thread.get("historyMode") != "paginated"
+                    or thread.get("path") is not None
+                    or thread.get("forkedFromId") is not None
+                    or thread.get("threadSource") != "skill-eval"
+                    or thread.get("turns") != []
+                ):
+                    raise ProviderError(
+                        "Codex child thread provenance differs from the root request"
+                    )
                 if not self._claim_collab_thread_scope(announced):
                     raise ProviderError("Codex thread announcement changed scope")
+                self._validated_collab_thread_ids.add(announced)
                 return
             if self._announced_thread_id is not None:
                 raise ProviderError("Codex announced more than one thread")
@@ -1803,8 +1892,10 @@ class _AppServerProtocol:
             if self._thread_id is None:
                 raise ProviderError("Codex turn announcement changed thread scope")
             if thread_id != self._thread_id:
-                if not self._claim_collab_thread_scope(thread_id):
-                    raise ProviderError("Codex turn announcement changed thread scope")
+                if thread_id not in self._validated_collab_thread_ids:
+                    raise ProviderError(
+                        "Codex child turn preceded its provenance announcement"
+                    )
                 turns = self._collab_turn_ids.setdefault(thread_id, set())
                 if announced in turns:
                     raise ProviderError("Codex announced a child turn more than once")
@@ -1826,6 +1917,14 @@ class _AppServerProtocol:
             validated = self._validate_usage(last)
             if main_turn:
                 self._last_usage = validated
+            else:
+                thread_id = _require_protocol_id(
+                    params.get("threadId"), "tokenUsage.threadId"
+                )
+                turn_id = _require_protocol_id(
+                    params.get("turnId"), "tokenUsage.turnId"
+                )
+                self._collab_turn_usage[(thread_id, turn_id)] = validated
             return
         if method == "item/completed":
             main_turn = self._matches_turn(params)
@@ -2069,13 +2168,7 @@ class _AppServerProtocol:
                     raise ProviderError(
                         "spawnAgent receiver did not match a pending child thread"
                     )
-            elif (
-                not pending
-                and status != "inProgress"
-                and any(
-                    receiver not in self._collab_thread_ids for receiver in receivers
-                )
-            ):
+            elif not pending and status != "inProgress" and lifecycle != "snapshot":
                 raise ProviderError("spawnAgent completed without a pending child")
             new_receivers = set(receivers) - self._collab_thread_ids
             if len(self._collab_thread_ids) + len(new_receivers) > _MAX_COLLAB_THREADS:
@@ -2186,37 +2279,10 @@ class _AppServerProtocol:
             thread_id = _require_protocol_id(
                 params.get("threadId"), "thread/status/changed.threadId"
             )
-            status = _require_object(
-                params.get("status"), "thread/status/changed.status"
+            self._validate_thread_status(
+                _require_object(params.get("status"), "thread/status/changed.status"),
+                "thread/status/changed.status",
             )
-            status_type = _require_string(
-                status.get("type"), "thread/status/changed.status.type"
-            )
-            if status_type == "active":
-                _require_exact_keys(
-                    status,
-                    "thread/status/changed.status",
-                    required={"activeFlags", "type"},
-                )
-                flags = _require_list(
-                    status.get("activeFlags"),
-                    "thread/status/changed.status.activeFlags",
-                    maximum=2,
-                )
-                if any(
-                    _require_string(flag, "thread active flag")
-                    not in {"waitingOnApproval", "waitingOnUserInput"}
-                    for flag in flags
-                ):
-                    raise ProviderError("thread status has an unknown active flag")
-            elif status_type in {"notLoaded", "idle", "systemError"}:
-                _require_exact_keys(
-                    status,
-                    "thread/status/changed.status",
-                    required={"type"},
-                )
-            else:
-                raise ProviderError("thread status is unknown")
             if self._thread_id is None:
                 raise ProviderError("thread/status/changed changed thread scope")
             if (
@@ -2234,6 +2300,31 @@ class _AppServerProtocol:
         if turn_id is not None and self._turn_id is not None:
             if _require_protocol_id(turn_id, f"{method}.turnId") != self._turn_id:
                 raise ProviderError(f"{method} targeted an unknown turn")
+
+    @staticmethod
+    def _validate_thread_status(status: dict[str, Any], label: str) -> None:
+        status_type = _require_string(status.get("type"), f"{label}.type")
+        if status_type == "active":
+            _require_exact_keys(
+                status,
+                label,
+                required={"activeFlags", "type"},
+            )
+            flags = _require_list(
+                status.get("activeFlags"),
+                f"{label}.activeFlags",
+                maximum=2,
+            )
+            if any(
+                _require_string(flag, "thread active flag")
+                not in {"waitingOnApproval", "waitingOnUserInput"}
+                for flag in flags
+            ):
+                raise ProviderError("thread status has an unknown active flag")
+        elif status_type in {"notLoaded", "idle", "systemError"}:
+            _require_exact_keys(status, label, required={"type"})
+        else:
+            raise ProviderError("thread status is unknown")
 
     @staticmethod
     def _validate_usage(raw: dict[str, Any]) -> dict[str, int]:

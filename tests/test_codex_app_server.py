@@ -158,6 +158,39 @@ def _model(model: str, efforts: tuple[str, ...]) -> dict[str, Any]:
     }
 
 
+def _child_thread(
+    thread_id: str = "child-1",
+    *,
+    parent_id: str = "thread-1",
+    session_id: str = "session-1",
+) -> dict[str, Any]:
+    return {
+        "cliVersion": "0.146.0",
+        "createdAt": 1_700_000_001,
+        "cwd": "/runtime/work",
+        "ephemeral": True,
+        "historyMode": "paginated",
+        "id": thread_id,
+        "modelProvider": "openai",
+        "parentThreadId": parent_id,
+        "path": None,
+        "preview": "delegated task",
+        "sessionId": session_id,
+        "source": {
+            "subAgent": {
+                "thread_spawn": {
+                    "depth": 1,
+                    "parent_thread_id": parent_id,
+                }
+            }
+        },
+        "status": {"activeFlags": [], "type": "active"},
+        "threadSource": "skill-eval",
+        "turns": [],
+        "updatedAt": 1_700_000_001,
+    }
+
+
 def _rate_limits(used: int, limit_id: str = "codex") -> dict[str, Any]:
     snapshot = {
         "limitId": limit_id,
@@ -693,6 +726,57 @@ class CodexProtocolTests(unittest.TestCase):
         self.assertEqual(turn["params"]["effort"], "low")
         self.assertEqual(turn["params"]["model"], "gpt-5.6-luna")
         self.assertNotIn("environments", turn["params"])
+
+    def test_child_usage_retains_only_the_latest_turn_update(self) -> None:
+        protocol = _protocol(QueueTransport([]))
+        protocol._thread_id = "thread-1"
+        protocol._turn_id = "turn-1"
+        protocol._collab_turn_ids["child-1"] = {"child-turn"}
+        for input_tokens, output_tokens, total_tokens in ((3, 1, 4), (20, 8, 28)):
+            protocol._handle_notification(
+                "thread/tokenUsage/updated",
+                {
+                    "threadId": "child-1",
+                    "tokenUsage": {
+                        "last": {
+                            "cachedInputTokens": 4,
+                            "inputTokens": input_tokens,
+                            "outputTokens": output_tokens,
+                            "reasoningOutputTokens": 3,
+                            "totalTokens": total_tokens,
+                        }
+                    },
+                    "turnId": "child-turn",
+                },
+            )
+
+        self.assertEqual(
+            protocol._collab_turn_usage[("child-1", "child-turn")]["total_tokens"],
+            28,
+        )
+
+    def test_happy_path_adds_child_usage_to_reported_totals(self) -> None:
+        protocol = _protocol(ScriptedTransport(Path("/runtime/work")))
+        protocol._collab_turn_usage[("child-1", "child-turn")] = {
+            "cached_input_tokens": 4,
+            "input_tokens": 20,
+            "output_tokens": 8,
+            "reasoning_output_tokens": 3,
+            "total_tokens": 28,
+        }
+        outcome = protocol.run("request", time.monotonic() + 5)
+
+        self.assertEqual(
+            outcome.tokens,
+            {
+                "cached_input_tokens": 6,
+                "input_tokens": 30,
+                "output_tokens": 13,
+                "reasoning_output_tokens": 4,
+                "total_tokens": 43,
+            },
+        )
+        self.assertEqual(outcome.raw_response["usage"], outcome.tokens)
 
     def test_thread_cli_version_mismatch_fails_before_turn_start(self) -> None:
         for version in ("codex-cli 0.144.1", "0.144.2"):
@@ -1397,6 +1481,37 @@ class CodexProtocolTests(unittest.TestCase):
                 self.assertEqual(protocol._pending_spawn_items, expected_pending)
                 self.assertEqual(protocol._collab_thread_ids, set())
 
+    def test_live_terminal_spawn_requires_a_pending_start(self) -> None:
+        base = {
+            "agentsStates": {},
+            "id": "spawn-1",
+            "senderThreadId": "thread-1",
+            "tool": "spawnAgent",
+            "type": "collabAgentToolCall",
+        }
+        for status, receivers in (("failed", []), ("completed", ["child-1"])):
+            protocol = _protocol(QueueTransport([]))
+            protocol._thread_id = "thread-1"
+            protocol._turn_id = "turn-1"
+            protocol._collab_thread_ids.add("child-1")
+            item = {
+                **base,
+                "receiverThreadIds": receivers,
+                "status": status,
+            }
+            with self.subTest(status=status):
+                with self.assertRaisesRegex(ProviderError, "without a pending child"):
+                    protocol._handle_notification(
+                        "item/completed",
+                        {
+                            "item": item,
+                            "threadId": "thread-1",
+                            "turnId": "turn-1",
+                        },
+                    )
+
+        protocol._validate_item(item, lifecycle="snapshot")
+
     def test_spawn_agent_bounds_total_child_thread_scope(self) -> None:
         protocol = _protocol(QueueTransport([]))
         protocol._thread_id = "thread-1"
@@ -1448,6 +1563,7 @@ class CodexProtocolTests(unittest.TestCase):
     def test_pending_spawn_bounds_early_child_status_scope(self) -> None:
         protocol = _protocol(QueueTransport([]))
         protocol._thread_id = "thread-1"
+        protocol._session_id = "session-1"
         initial = {
             "agentsStates": {},
             "id": "item-1",
@@ -1470,6 +1586,12 @@ class CodexProtocolTests(unittest.TestCase):
         self.assertEqual(protocol._unbound_collab_thread_ids, {"child-1"})
 
         protocol._turn_id = "main-turn"
+        with self.assertRaisesRegex(ProviderError, "preceded its provenance"):
+            protocol._handle_notification(
+                "turn/started",
+                {"threadId": "child-1", "turn": {"id": "child-turn"}},
+            )
+        protocol._handle_notification("thread/started", {"thread": _child_thread()})
         protocol._handle_notification(
             "turn/started",
             {"threadId": "child-1", "turn": {"id": "child-turn"}},
@@ -1522,7 +1644,7 @@ class CodexProtocolTests(unittest.TestCase):
                 "thread/status/changed",
                 {"status": {"type": "idle"}, "threadId": "unknown-child"},
             )
-        with self.assertRaisesRegex(ProviderError, "changed thread scope"):
+        with self.assertRaisesRegex(ProviderError, "preceded its provenance"):
             protocol._handle_notification(
                 "turn/started",
                 {"threadId": "unknown-child", "turn": {"id": "unknown-turn"}},
@@ -1546,6 +1668,46 @@ class CodexProtocolTests(unittest.TestCase):
         )
         self.assertEqual(protocol._pending_spawn_items, {})
         self.assertEqual(protocol._unbound_collab_thread_ids, set())
+
+    def test_child_thread_provenance_is_validated_before_scope_claim(self) -> None:
+        initial = {
+            "agentsStates": {},
+            "id": "spawn-1",
+            "receiverThreadIds": [],
+            "senderThreadId": "thread-1",
+            "status": "inProgress",
+            "tool": "spawnAgent",
+            "type": "collabAgentToolCall",
+        }
+        mutations = {
+            "model provider": lambda thread: thread.update(modelProvider="other"),
+            "CLI version": lambda thread: thread.update(cliVersion="0.145.0"),
+            "working directory": lambda thread: thread.update(cwd="/other"),
+            "session": lambda thread: thread.update(sessionId="other-session"),
+            "parent": lambda thread: thread.update(parentThreadId="other-parent"),
+            "source parent": lambda thread: thread["source"]["subAgent"][
+                "thread_spawn"
+            ].update(parent_thread_id="other-parent"),
+        }
+        for label, mutate in mutations.items():
+            protocol = _protocol(QueueTransport([]))
+            protocol._thread_id = "thread-1"
+            protocol._session_id = "session-1"
+            protocol._validate_item(initial)
+            thread = _child_thread()
+            mutate(thread)
+            with self.subTest(label=label), self.assertRaises(ProviderError):
+                protocol._handle_notification("thread/started", {"thread": thread})
+            self.assertEqual(protocol._collab_thread_ids, set())
+            self.assertEqual(protocol._unbound_collab_thread_ids, set())
+            self.assertEqual(protocol._validated_collab_thread_ids, set())
+
+        protocol = _protocol(QueueTransport([]))
+        protocol._thread_id = "thread-1"
+        protocol._session_id = "session-1"
+        protocol._validate_item(initial)
+        protocol._handle_notification("thread/started", {"thread": _child_thread()})
+        self.assertEqual(protocol._validated_collab_thread_ids, {"child-1"})
 
     def test_parallel_pending_spawns_accept_cross_ordered_child_announcements(
         self,

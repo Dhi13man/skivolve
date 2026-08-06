@@ -1666,6 +1666,72 @@ class _AppServerProtocol:
                 optional={"additionalDetails", "codexErrorInfo"},
             )
             _require_string(error.get("message"), "error notification.error.message")
+            additional_details = error.get("additionalDetails")
+            if additional_details is not None and not isinstance(
+                additional_details, str
+            ):
+                raise ProviderError(
+                    "error notification additionalDetails must be a string or null"
+                )
+            error_info = error.get("codexErrorInfo")
+            if isinstance(error_info, str):
+                if error_info not in {
+                    "badRequest",
+                    "contextWindowExceeded",
+                    "cyberPolicy",
+                    "internalServerError",
+                    "other",
+                    "sandboxError",
+                    "serverOverloaded",
+                    "sessionBudgetExceeded",
+                    "threadRollbackFailed",
+                    "unauthorized",
+                    "usageLimitExceeded",
+                }:
+                    raise ProviderError(
+                        "error notification has unknown Codex error info"
+                    )
+            elif error_info is not None:
+                info = _require_object(error_info, "error notification.codexErrorInfo")
+                if len(info) != 1:
+                    raise ProviderError(
+                        "error notification has invalid Codex error info"
+                    )
+                variant, raw_info = next(iter(info.items()))
+                variant_info = _require_object(
+                    raw_info, f"error notification.codexErrorInfo.{variant}"
+                )
+                if variant in {
+                    "httpConnectionFailed",
+                    "responseStreamConnectionFailed",
+                    "responseStreamDisconnected",
+                    "responseTooManyFailedAttempts",
+                }:
+                    _require_exact_keys(
+                        variant_info,
+                        f"error notification.codexErrorInfo.{variant}",
+                        required=set(),
+                        optional={"httpStatusCode"},
+                    )
+                    _optional_bounded_integer(
+                        variant_info.get("httpStatusCode"),
+                        "error notification HTTP status",
+                        maximum=65535,
+                    )
+                elif variant == "activeTurnNotSteerable":
+                    _require_exact_keys(
+                        variant_info,
+                        "error notification active-turn error info",
+                        required={"turnKind"},
+                    )
+                    if variant_info.get("turnKind") not in {"review", "compact"}:
+                        raise ProviderError(
+                            "error notification has unknown active turn kind"
+                        )
+                else:
+                    raise ProviderError(
+                        "error notification has unknown Codex error info"
+                    )
             main_turn = self._matches_turn(params)
             if not main_turn and not self._matches_collab_turn(params):
                 raise ProviderError("Codex error notification changed turn scope")
@@ -1910,7 +1976,10 @@ class _AppServerProtocol:
             _require_protocol_id(value, "collaboration receiver thread id")
             for value in raw_receivers
         ]
-        if len(receivers) != len(set(receivers)) or self._thread_id in receivers:
+        if len(receivers) != len(set(receivers)) or (
+            self._thread_id in receivers
+            and (sender == self._thread_id or tool == "spawnAgent")
+        ):
             raise ProviderError("collaboration receiver thread ids are invalid")
         status = _require_string(item.get("status"), "collaboration item status")
         if status not in {"inProgress", "completed", "failed"}:
@@ -2033,7 +2102,10 @@ class _AppServerProtocol:
             else:
                 self._pending_spawn_items.pop(pending_key, None)
             self._collab_thread_ids.update(receivers)
-        elif any(receiver not in self._collab_thread_ids for receiver in receivers):
+        elif any(
+            receiver != self._thread_id and receiver not in self._collab_thread_ids
+            for receiver in receivers
+        ):
             raise ProviderError("collaboration item targeted an unknown child thread")
 
     def _validate_completed_turn(

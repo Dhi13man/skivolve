@@ -778,11 +778,54 @@ class CodexProtocolTests(unittest.TestCase):
                 **valid,
                 "error": {**valid["error"], "message": None},
             },
+            "invalid additional details": {
+                **valid,
+                "error": {**valid["error"], "additionalDetails": {}},
+            },
+            "unknown error code": {
+                **valid,
+                "error": {**valid["error"], "codexErrorInfo": "futureError"},
+            },
+            "unknown error variant": {
+                **valid,
+                "error": {**valid["error"], "codexErrorInfo": {"futureError": {}}},
+            },
+            "invalid HTTP status": {
+                **valid,
+                "error": {
+                    **valid["error"],
+                    "codexErrorInfo": {
+                        "responseStreamDisconnected": {"httpStatusCode": 65536}
+                    },
+                },
+            },
+            "invalid active turn kind": {
+                **valid,
+                "error": {
+                    **valid["error"],
+                    "codexErrorInfo": {"activeTurnNotSteerable": {"turnKind": "exec"}},
+                },
+            },
             "wrong thread": {**valid, "threadId": "thread-2"},
             "wrong turn": {**valid, "turnId": "turn-2"},
         }
 
-        protocol._handle_notification("error", valid)
+        for error in (
+            valid["error"],
+            {**valid["error"], "additionalDetails": "upstream detail"},
+            {**valid["error"], "codexErrorInfo": "serverOverloaded"},
+            {
+                **valid["error"],
+                "codexErrorInfo": {
+                    "responseStreamDisconnected": {"httpStatusCode": 503}
+                },
+            },
+            {
+                **valid["error"],
+                "codexErrorInfo": {"activeTurnNotSteerable": {"turnKind": "review"}},
+            },
+        ):
+            protocol._handle_notification("error", {**valid, "error": error})
         for label, params in invalid.items():
             with self.subTest(label=label):
                 with self.assertRaises(ProviderError):
@@ -1585,6 +1628,23 @@ class CodexProtocolTests(unittest.TestCase):
             }
         )
         self.assertEqual(protocol._pending_spawn_items, {})
+
+    def test_child_collaboration_item_can_target_root_thread(self) -> None:
+        protocol = _protocol(QueueTransport([]))
+        protocol._thread_id = "main-thread"
+        protocol._collab_thread_ids.add("child-1")
+
+        protocol._validate_item(
+            {
+                "agentsStates": {},
+                "id": "message-1",
+                "receiverThreadIds": ["main-thread"],
+                "senderThreadId": "child-1",
+                "status": "completed",
+                "tool": "sendInput",
+                "type": "collabAgentToolCall",
+            }
+        )
 
     def test_one_child_cannot_complete_two_pending_spawns(self) -> None:
         protocol = _protocol(QueueTransport([]))

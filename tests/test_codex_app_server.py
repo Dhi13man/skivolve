@@ -293,7 +293,7 @@ class ScriptedTransport:
         skill_disable_succeeds: bool = True,
         thread_cli_version: str = "0.146.0",
         turn_error: dict[str, Any] | None = None,
-        turn_items_view: str | None = "notLoaded",
+        turn_items_view: str | None = "summary",
     ) -> None:
         self.workspace = workspace
         self.additional_item_completed = additional_item_completed
@@ -599,11 +599,18 @@ class ScriptedTransport:
             full_items.append(self.additional_item_completed)
         if self.full_has_non_object_item:
             full_items.append(None)
-        turn_items = (
-            full_items
-            if self.turn_items_view in {None, "full"} or self.not_loaded_has_items
-            else []
-        )
+        if self.turn_items_view == "summary":
+            turn_items = [
+                next(
+                    item
+                    for item in reversed(full_items)
+                    if isinstance(item, dict) and item.get("type") == "agentMessage"
+                )
+            ]
+        elif self.turn_items_view == "full" or self.not_loaded_has_items:
+            turn_items = full_items
+        else:
+            turn_items = []
         turn = {
             "durationMs": 25,
             "id": self.turn_id,
@@ -702,7 +709,7 @@ class CodexProtocolTests(unittest.TestCase):
         self.assertEqual(outcome.final_output, "completed fixture")
         self.assertEqual(outcome.tokens["input_tokens"], 10)
         self.assertEqual(outcome.tokens["total_tokens"], 15)
-        self.assertEqual(outcome.raw_response["turn"]["items_view"], "notLoaded")
+        self.assertEqual(outcome.raw_response["turn"]["items_view"], "summary")
         rolling = outcome.quota["rolling"]["rateLimits"]
         self.assertEqual(rolling["planType"], "pro")
         self.assertEqual(rolling["primary"]["usedPercent"], 40)
@@ -1191,15 +1198,16 @@ class CodexProtocolTests(unittest.TestCase):
             ).run("request", time.monotonic() + 5)
 
     def test_disagreeing_final_message_is_rejected(self) -> None:
-        for field in ("id", "phase", "text"):
-            with self.subTest(field=field):
-                transport = ScriptedTransport(
-                    Path("/runtime/work"),
-                    disagree_final_field=field,
-                    turn_items_view="full",
-                )
-                with self.assertRaisesRegex(ProviderError, "disagrees"):
-                    _protocol(transport).run("request", time.monotonic() + 5)
+        for items_view in ("full", "summary"):
+            for field in ("id", "phase", "text"):
+                with self.subTest(items_view=items_view, field=field):
+                    transport = ScriptedTransport(
+                        Path("/runtime/work"),
+                        disagree_final_field=field,
+                        turn_items_view=items_view,
+                    )
+                    with self.assertRaisesRegex(ProviderError, "disagrees"):
+                        _protocol(transport).run("request", time.monotonic() + 5)
 
     def test_full_turn_rejects_duplicate_matching_completion_events(self) -> None:
         transport = ScriptedTransport(
@@ -1212,7 +1220,9 @@ class CodexProtocolTests(unittest.TestCase):
 
     def test_not_loaded_turn_rejects_duplicate_completion_events(self) -> None:
         transport = ScriptedTransport(
-            Path("/runtime/work"), duplicate_item_completed=True
+            Path("/runtime/work"),
+            duplicate_item_completed=True,
+            turn_items_view="notLoaded",
         )
         with self.assertRaisesRegex(ProviderError, "repeated an agent-message id"):
             _protocol(transport).run("request", time.monotonic() + 5)
@@ -1226,6 +1236,7 @@ class CodexProtocolTests(unittest.TestCase):
                 "text": "second final",
                 "type": "agentMessage",
             },
+            turn_items_view="notLoaded",
         )
         with self.assertRaisesRegex(ProviderError, "multiple final-answer messages"):
             _protocol(transport).run("request", time.monotonic() + 5)
@@ -1235,7 +1246,7 @@ class CodexProtocolTests(unittest.TestCase):
             ("commentary", "ended with commentary"),
             (None, "final-answer message was not terminal"),
         )
-        for items_view in ("notLoaded", "full"):
+        for items_view in ("notLoaded", "full", "summary"):
             for phase, expected in cases:
                 with self.subTest(items_view=items_view, phase=phase):
                     transport = ScriptedTransport(
@@ -1252,7 +1263,7 @@ class CodexProtocolTests(unittest.TestCase):
                         _protocol(transport).run("request", time.monotonic() + 5)
 
     def test_terminal_agent_message_must_contain_non_whitespace_text(self) -> None:
-        for items_view in ("notLoaded", "full"):
+        for items_view in ("notLoaded", "full", "summary"):
             with self.subTest(items_view=items_view):
                 transport = ScriptedTransport(
                     Path("/runtime/work"),
@@ -1287,15 +1298,15 @@ class CodexProtocolTests(unittest.TestCase):
         with self.assertRaisesRegex(ProviderError, "repeated an agent-message id"):
             _protocol(transport).run("request", time.monotonic() + 5)
 
-    def test_full_and_legacy_full_turn_items_remain_compatible(self) -> None:
-        for items_view in ("full", None):
+    def test_full_and_summary_turn_items_are_validated(self) -> None:
+        for items_view in ("full", "summary"):
             with self.subTest(items_view=items_view):
                 outcome = _protocol(
                     ScriptedTransport(Path("/runtime/work"), turn_items_view=items_view)
                 ).run("request", time.monotonic() + 5)
 
                 self.assertEqual(outcome.final_output, "completed fixture")
-                self.assertEqual(outcome.raw_response["turn"]["items_view"], "full")
+                self.assertEqual(outcome.raw_response["turn"]["items_view"], items_view)
 
     def test_full_turn_rejects_non_object_items(self) -> None:
         transport = ScriptedTransport(
@@ -1308,34 +1319,44 @@ class CodexProtocolTests(unittest.TestCase):
         ):
             _protocol(transport).run("request", time.monotonic() + 5)
 
-    def test_summary_and_unknown_turn_item_views_are_rejected(self) -> None:
-        for items_view in ("summary", "future"):
-            with self.subTest(items_view=items_view):
-                with self.assertRaisesRegex(ProviderError, "unsupported item view"):
-                    _protocol(
-                        ScriptedTransport(
-                            Path("/runtime/work"), turn_items_view=items_view
-                        )
-                    ).run("request", time.monotonic() + 5)
+    def test_missing_and_unknown_turn_item_views_are_rejected(self) -> None:
+        for items_view, expected in (
+            (None, "itemsView"),
+            ("future", "unsupported item view"),
+        ):
+            with (
+                self.subTest(items_view=items_view),
+                self.assertRaisesRegex(ProviderError, expected),
+            ):
+                _protocol(
+                    ScriptedTransport(Path("/runtime/work"), turn_items_view=items_view)
+                ).run("request", time.monotonic() + 5)
 
     def test_not_loaded_turn_items_must_be_empty(self) -> None:
-        transport = ScriptedTransport(Path("/runtime/work"), not_loaded_has_items=True)
+        transport = ScriptedTransport(
+            Path("/runtime/work"),
+            not_loaded_has_items=True,
+            turn_items_view="notLoaded",
+        )
         with self.assertRaisesRegex(
             ProviderError, "not-loaded turn items must be empty"
         ):
             _protocol(transport).run("request", time.monotonic() + 5)
 
     def test_turn_requires_authoritative_completed_message(self) -> None:
-        for items_view in ("notLoaded", "full"):
+        for items_view in ("notLoaded", "full", "summary"):
             with self.subTest(items_view=items_view):
                 transport = ScriptedTransport(
                     Path("/runtime/work"),
                     omit_item_completed=True,
                     turn_items_view=items_view,
                 )
-                with self.assertRaisesRegex(
-                    ProviderError, "completed final agent message"
-                ):
+                expected = (
+                    "summary message disagrees"
+                    if items_view == "summary"
+                    else "completed final agent message"
+                )
+                with self.assertRaisesRegex(ProviderError, expected):
                     _protocol(transport).run("request", time.monotonic() + 5)
 
     def test_skill_disable_refusal_is_rejected(self) -> None:
@@ -1561,7 +1582,10 @@ class CodexProtocolTests(unittest.TestCase):
                     item.update(
                         {
                             "agentsStates": {},
-                            "receiverThreadIds": ["child-1"],
+                            "model": "",
+                            "prompt": "delegated task",
+                            "reasoningEffort": "medium",
+                            "receiverThreadIds": [],
                             "senderThreadId": "thread-1",
                             "status": "inProgress",
                             "tool": "spawnAgent",
@@ -1620,38 +1644,52 @@ class CodexProtocolTests(unittest.TestCase):
                     )
                 self.assertNotIn(sentinel, str(raised.exception))
 
-    def test_spawn_agent_allows_schema_defined_empty_initial_receivers(self) -> None:
+    def test_spawn_agent_matches_the_pinned_wire_lifecycle(self) -> None:
         protocol = _protocol(QueueTransport([]))
         protocol._thread_id = "thread-1"
+        protocol._turn_id = "turn-1"
+        envelope = {"threadId": "thread-1", "turnId": "turn-1"}
         initial = {
             "agentsStates": {},
             "id": "item-1",
+            "model": "",
+            "prompt": "delegated task",
+            "reasoningEffort": "medium",
             "receiverThreadIds": [],
             "senderThreadId": "thread-1",
             "status": "inProgress",
             "tool": "spawnAgent",
             "type": "collabAgentToolCall",
         }
-        protocol._validate_item(initial)
+        protocol._handle_notification("item/started", {**envelope, "item": initial})
         self.assertEqual(protocol._collab_thread_ids, set())
         self.assertEqual(protocol._pending_spawn_items, {("thread-1", "item-1"): None})
+        with self.assertRaisesRegex(ProviderError, "already in progress"):
+            protocol._handle_notification("item/started", {**envelope, "item": initial})
 
         completed = {
             **initial,
             "agentsStates": {"child-1": {"status": "completed"}},
+            "model": "gpt-5.6-luna",
+            "reasoningEffort": "low",
             "receiverThreadIds": ["child-1"],
             "status": "completed",
         }
-        protocol._validate_item(completed)
+        protocol._handle_notification("item/completed", {**envelope, "item": completed})
         self.assertEqual(protocol._collab_thread_ids, {"child-1"})
+        self.assertEqual(protocol._collab_parent_ids, {"child-1": "thread-1"})
         self.assertEqual(protocol._pending_spawn_items, {})
 
-    def test_pending_spawn_claims_its_explicit_receiver(self) -> None:
+    def test_spawn_start_rejects_an_explicit_receiver(self) -> None:
         protocol = _protocol(QueueTransport([]))
         protocol._thread_id = "thread-1"
+        protocol._turn_id = "turn-1"
         item = {
             "agentsStates": {},
             "id": "item-1",
+            "model": "",
+            "prompt": "delegated task",
+            "reasoningEffort": "medium",
             "receiverThreadIds": ["child-1"],
             "senderThreadId": "thread-1",
             "status": "inProgress",
@@ -1659,20 +1697,12 @@ class CodexProtocolTests(unittest.TestCase):
             "type": "collabAgentToolCall",
         }
 
-        protocol._validate_item(item)
-        protocol._handle_notification(
-            "thread/status/changed",
-            {
-                "status": {"activeFlags": [], "type": "active"},
-                "threadId": "child-1",
-            },
-        )
-
-        self.assertEqual(
-            protocol._pending_spawn_items, {("thread-1", "item-1"): "child-1"}
-        )
-        self.assertEqual(protocol._collab_thread_ids, {"child-1"})
-        self.assertEqual(protocol._collab_parent_ids, {"child-1": "thread-1"})
+        with self.assertRaisesRegex(ProviderError, "must not have receivers"):
+            protocol._handle_notification(
+                "item/started",
+                {"item": item, "threadId": "thread-1", "turnId": "turn-1"},
+            )
+        self.assertEqual(protocol._pending_spawn_items, {})
 
     def test_failed_spawn_releases_unstarted_receiver(self) -> None:
         protocol = _protocol(QueueTransport([]))
@@ -1741,6 +1771,8 @@ class CodexProtocolTests(unittest.TestCase):
         completed = {
             **initial,
             "agentsStates": {"child-1": {"status": "running"}},
+            "model": "gpt-5.6-luna",
+            "reasoningEffort": "low",
             "receiverThreadIds": ["child-1"],
             "status": "completed",
         }
@@ -1760,6 +1792,8 @@ class CodexProtocolTests(unittest.TestCase):
                 {
                     **completed,
                     "agentsStates": {},
+                    "model": "",
+                    "reasoningEffort": "medium",
                     "receiverThreadIds": [],
                     "status": "failed",
                 },
@@ -1849,6 +1883,9 @@ class CodexProtocolTests(unittest.TestCase):
             protocol._collab_thread_ids.add("child-1")
             item = {
                 **base,
+                "model": "" if status == "failed" else "gpt-5.6-luna",
+                "prompt": "delegated task",
+                "reasoningEffort": "medium" if status == "failed" else "low",
                 "receiverThreadIds": receivers,
                 "status": status,
             }
@@ -1873,6 +1910,9 @@ class CodexProtocolTests(unittest.TestCase):
         item = {
             "agentsStates": {},
             "id": "spawn-1",
+            "model": "",
+            "prompt": "delegated task",
+            "reasoningEffort": "medium",
             "receiverThreadIds": [],
             "senderThreadId": "thread-1",
             "status": "inProgress",

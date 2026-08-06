@@ -1264,7 +1264,15 @@ class _AppServerProtocol:
         self._pending_spawn_items: dict[tuple[str, str], str | None] = {}
         self._terminal_collab_history: dict[
             tuple[str, str],
-            tuple[str, str, tuple[str, ...], tuple[tuple[str, str], ...]],
+            tuple[
+                str,
+                str,
+                tuple[str, ...],
+                tuple[tuple[str, str], ...],
+                str | None,
+                str | None,
+                str | None,
+            ],
         ] = {}
         self._terminal_collab_item_ids: set[tuple[str, str]] = set()
         self._active_nonspawn_items: dict[
@@ -2000,6 +2008,9 @@ class _AppServerProtocol:
                             spawn_status,
                             spawn_receivers,
                             _agent_statuses,
+                            _model,
+                            _prompt,
+                            _reasoning_effort,
                         ) in self._terminal_collab_history.items()
                     )
                 ):
@@ -2245,17 +2256,37 @@ class _AppServerProtocol:
         item_scope = (sender, item_id)
         if lifecycle != "snapshot" and item_scope in self._terminal_collab_item_ids:
             raise ProviderError("collaboration item ID was reused after termination")
-        for field in ("model", "prompt", "reasoningEffort"):
-            value = item.get(field)
+        model = item.get("model")
+        prompt = item.get("prompt")
+        reasoning_effort = item.get("reasoningEffort")
+        for field, value in (
+            ("model", model),
+            ("prompt", prompt),
+            ("reasoningEffort", reasoning_effort),
+        ):
             if value is not None and not isinstance(value, str):
                 raise ProviderError(f"collaboration {field} must be a string or null")
-        if item.get("reasoningEffort") == "":
+        spawn_placeholder = tool == "spawnAgent" and (
+            lifecycle == "started"
+            or (
+                lifecycle in {"completed", "snapshot"}
+                and status == "failed"
+                and not receivers
+            )
+        )
+        if spawn_placeholder:
+            if model != "" or reasoning_effort != "medium":
+                raise ProviderError("spawnAgent placeholder metadata is invalid")
+        elif tool == "spawnAgent" and lifecycle == "completed":
+            if model != self._model or reasoning_effort != self._reasoning_effort:
+                raise ProviderError("terminal spawnAgent metadata is invalid")
+        elif reasoning_effort == "":
             raise ProviderError(
                 "collaboration reasoningEffort must be a non-empty string or null"
             )
-        if item.get("model") not in {None, self._model}:
+        elif model not in {None, self._model}:
             raise ProviderError("collaboration model differs from the pinned model")
-        if item.get("reasoningEffort") not in {None, self._reasoning_effort}:
+        elif reasoning_effort not in {None, self._reasoning_effort}:
             raise ProviderError(
                 "collaboration reasoningEffort differs from the pinned reasoning effort"
             )
@@ -2306,6 +2337,9 @@ class _AppServerProtocol:
             status,
             tuple(receivers),
             tuple(sorted(agent_statuses.items())),
+            model,
+            prompt,
+            reasoning_effort,
         )
         if (
             lifecycle == "snapshot"
@@ -2326,6 +2360,8 @@ class _AppServerProtocol:
                     "terminal collaboration item disagreed with its start"
                 )
         if tool == "spawnAgent":
+            if lifecycle == "started" and receivers:
+                raise ProviderError("spawnAgent start must not have receivers")
             if status == "completed" and len(receivers) != 1:
                 raise ProviderError(
                     "completed spawnAgent must have exactly one receiver"
@@ -2335,6 +2371,8 @@ class _AppServerProtocol:
             pending_key = (sender, item_id)
             pending = pending_key in self._pending_spawn_items
             expected_receiver = self._pending_spawn_items.get(pending_key)
+            if status == "inProgress" and pending:
+                raise ProviderError("spawnAgent item was already in progress")
             if expected_receiver is not None and receivers != [expected_receiver]:
                 raise ProviderError(
                     "spawnAgent receiver did not match its pending child thread"
@@ -2404,27 +2442,11 @@ class _AppServerProtocol:
             if lifecycle == "snapshot":
                 pass
             elif status == "inProgress":
-                if not pending:
-                    if any(
-                        receiver in self._collab_thread_ids for receiver in receivers
-                    ):
-                        raise ProviderError("spawnAgent receiver was already claimed")
-                    if len(self._pending_spawn_items) >= _MAX_COLLAB_THREADS:
-                        raise ProviderError("pending spawn count exceeds the limit")
-                    self._pending_spawn_items[pending_key] = receiver
-                    if receiver is not None:
-                        self._collab_parent_ids[receiver] = sender
-                        self._collab_thread_ids.add(receiver)
-                elif expected_receiver is None and receiver is not None:
-                    if receiver in self._unbound_collab_thread_ids:
-                        self._bind_unbound_collab_thread(receiver, sender)
-                    elif receiver in self._collab_thread_ids:
-                        raise ProviderError("spawnAgent receiver was already claimed")
-                    elif len(self._unbound_collab_thread_ids) >= unbound_slots:
-                        raise ProviderError(
-                            "spawnAgent receiver did not match a pending child thread"
-                        )
-                    self._pending_spawn_items[pending_key] = receiver
+                if any(receiver in self._collab_thread_ids for receiver in receivers):
+                    raise ProviderError("spawnAgent receiver was already claimed")
+                if len(self._pending_spawn_items) >= _MAX_COLLAB_THREADS:
+                    raise ProviderError("pending spawn count exceeds the limit")
+                self._pending_spawn_items[pending_key] = receiver
             else:
                 self._pending_spawn_items.pop(pending_key, None)
             if lifecycle == "snapshot":
@@ -2497,7 +2519,7 @@ class _AppServerProtocol:
         items = _require_list(
             turn.get("items"), "completed turn items", maximum=_MAX_MESSAGES
         )
-        items_view = turn.get("itemsView", "full")
+        items_view = _require_string(turn.get("itemsView"), "completed turn itemsView")
         if items_view not in {"full", "notLoaded", "summary"}:
             raise ProviderError("completed turn returned an unsupported item view")
         if items_view == "notLoaded" and items:
@@ -2661,13 +2683,13 @@ class _AppServerProtocol:
         if turn.get("error") is not None:
             raise ProviderError("completed Codex turn included an error")
         items = _require_list(turn.get("items"), "turn.items", maximum=_MAX_MESSAGES)
-        items_view = turn.get("itemsView", "full")
+        items_view = _require_string(turn.get("itemsView"), "turn.itemsView")
         messages: list[dict[str, str | None]]
         if items_view == "notLoaded":
             if items:
                 raise ProviderError("Codex not-loaded turn items must be empty")
             messages = list(self._completed_messages)
-        elif items_view == "full":
+        elif items_view in {"full", "summary"}:
             messages = []
             for index, raw_item in enumerate(items):
                 item = _require_object(raw_item, f"turn.items[{index}]")
@@ -2688,6 +2710,19 @@ class _AppServerProtocol:
                             ),
                         }
                     )
+            if items_view == "summary":
+                if len(items) != 1 or len(messages) != 1:
+                    raise ProviderError(
+                        "Codex summary turn must contain one agent message"
+                    )
+                if (
+                    not self._completed_messages
+                    or messages[0] != self._completed_messages[-1]
+                ):
+                    raise ProviderError(
+                        "Codex summary message disagrees with its completion event"
+                    )
+                messages = list(self._completed_messages)
         else:
             raise ProviderError("Codex turn returned an unsupported item view")
         if not messages or not self._completed_messages:

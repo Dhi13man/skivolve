@@ -10,7 +10,7 @@ All notable changes to Skivolve are documented in this file. The format follows 
 
 ### Fixed
 
-- Accepted bounded Codex collaboration lifecycles, required each completed spawn to bind exactly one child, kept child-agent traffic from mutating the main result, and cleaned unreadable evaluator runtime directories without following symlinks.
+- Accepted bounded Codex collaboration lifecycles, matched wait and send-input completions to their starts, recorded child status and token evidence without retaining unbounded messages, kept child-agent traffic from mutating the main result, and cleaned deeply nested unreadable runtime directories without following symlinks.
 
 ## [0.5.0] - 2026-07-29
 

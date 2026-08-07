@@ -1261,24 +1261,19 @@ class _AppServerProtocol:
         self._active_collab_thread_ids: set[str] = set()
         self._seen_collab_turn_ids: set[tuple[str, str]] = set()
         self._collab_turn_usage: dict[tuple[str, str], dict[str, int]] = {}
+        self._collab_turn_statuses = {
+            "completed": 0,
+            "failed": 0,
+            "interrupted": 0,
+        }
         self._pending_spawn_items: dict[
             tuple[str, str], tuple[str | None, bytes | None]
         ] = {}
-        self._terminal_collab_history: dict[
-            tuple[str, str],
-            tuple[
-                str,
-                str,
-                tuple[str, ...],
-                tuple[tuple[str, str], ...],
-                str | None,
-                bytes | None,
-                str | None,
-            ],
-        ] = {}
+        self._terminal_collab_history: dict[tuple[str, str], bytes] = {}
         self._terminal_collab_item_ids: set[tuple[str, str]] = set()
+        self._completed_spawn_edges: set[tuple[str, str]] = set()
         self._active_nonspawn_items: dict[
-            tuple[str, str], tuple[str, tuple[str, ...]]
+            tuple[str, str], tuple[str, tuple[str, ...], bytes | None]
         ] = {}
         self._unbound_collab_thread_ids: set[str] = set()
         self._failed_collab_thread_ids: set[str] = set()
@@ -1304,9 +1299,11 @@ class _AppServerProtocol:
         if self._last_usage is None:
             raise ProviderError("Codex turn omitted last-turn token usage")
         total_usage = dict(self._last_usage)
-        for child_usage in self._collab_turn_usage.values():
-            for key, value in child_usage.items():
+        child_usage = {key: 0 for key in self._last_usage}
+        for usage in self._collab_turn_usage.values():
+            for key, value in usage.items():
                 total_usage[key] += value
+                child_usage[key] += value
         quota = {
             "before": before_limits,
             "rolling": self._rate_limits,
@@ -1315,6 +1312,12 @@ class _AppServerProtocol:
         assert self._thread_id is not None and self._turn_id is not None
         raw = {
             "account": account,
+            "collaboration": {
+                "child_thread_count": len(self._validated_collab_thread_ids),
+                "child_turn_count": len(self._seen_collab_turn_ids),
+                "child_turn_statuses": dict(self._collab_turn_statuses),
+                "usage": child_usage,
+            },
             "model": self._model,
             "reasoning_effort": self._reasoning_effort,
             "thread_id_sha256": _opaque_sha256(self._thread_id),
@@ -1997,24 +2000,7 @@ class _AppServerProtocol:
                             _item_id,
                         ), pending in self._pending_spawn_items.items()
                     )
-                    or any(
-                        spawn_tool == "spawnAgent"
-                        and sender == parent_id
-                        and spawn_status == "completed"
-                        and spawn_receivers == (announced,)
-                        for (
-                            sender,
-                            _item_id,
-                        ), (
-                            spawn_tool,
-                            spawn_status,
-                            spawn_receivers,
-                            _agent_statuses,
-                            _model,
-                            _prompt_digest,
-                            _reasoning_effort,
-                        ) in self._terminal_collab_history.items()
-                    )
+                    or (parent_id, announced) in self._completed_spawn_edges
                 ):
                     raise ProviderError(
                         "Codex child thread lacked parent-owned spawn history"
@@ -2152,7 +2138,7 @@ class _AppServerProtocol:
                     completed_thread_id, set()
                 ):
                     raise ProviderError("Codex completed an unknown child turn")
-                self._validate_completed_turn(turn, completed_thread_id)
+                child_status = self._validate_completed_turn(turn, completed_thread_id)
                 if (
                     completed_thread_id,
                     completed_turn_id,
@@ -2160,6 +2146,7 @@ class _AppServerProtocol:
                     raise ProviderError("Codex child turn omitted token usage")
                 self._collab_turn_ids[completed_thread_id].remove(completed_turn_id)
                 self._active_collab_thread_ids.discard(completed_thread_id)
+                self._collab_turn_statuses[child_status] += 1
                 return
             if self._turn_id is None or completed_turn_id != self._turn_id:
                 raise ProviderError("Codex completed an unknown turn")
@@ -2291,6 +2278,8 @@ class _AppServerProtocol:
             if prompt is not None
             else None
         )
+        if tool == "sendInput" and prompt_digest is None:
+            raise ProviderError("sendInput prompt must be a string")
         spawn_placeholder = tool == "spawnAgent" and (
             lifecycle == "started"
             or (
@@ -2300,7 +2289,10 @@ class _AppServerProtocol:
             )
         )
         if spawn_placeholder:
-            if model != "" or reasoning_effort != "medium":
+            if model not in {"", self._model} or reasoning_effort not in {
+                "medium",
+                self._reasoning_effort,
+            }:
                 raise ProviderError("spawnAgent placeholder metadata is invalid")
         elif tool == "spawnAgent" and lifecycle == "completed":
             if model != self._model or reasoning_effort != self._reasoning_effort:
@@ -2357,15 +2349,28 @@ class _AppServerProtocol:
                     > _MAX_RETAINED_TEXT_BYTES
                 ):
                     raise ProviderError("collaboration agent message exceeds the limit")
-        terminal_item = (
-            tool,
-            status,
-            tuple(receivers),
-            tuple(sorted(agent_statuses.items())),
-            model,
-            prompt_digest,
-            reasoning_effort,
-        )
+        if (
+            tool == "wait"
+            and lifecycle in {"completed", "snapshot"}
+            and set(agent_statuses) != set(receivers)
+        ):
+            raise ProviderError("wait completion states disagree with its receivers")
+        terminal_item = hashlib.sha256(
+            _canonical_json(
+                {
+                    "agent_statuses": agent_statuses,
+                    "model": model,
+                    "prompt_sha256": (
+                        prompt_digest.hex() if prompt_digest is not None else None
+                    ),
+                    "reasoning_effort": reasoning_effort,
+                    "receivers": receivers,
+                    "status": status,
+                    "tool": tool,
+                },
+                "collaboration terminal item",
+            )
+        ).digest()
         if (
             lifecycle == "snapshot"
             and self._terminal_collab_history.get(item_scope) != terminal_item
@@ -2380,9 +2385,23 @@ class _AppServerProtocol:
         elif tool != "spawnAgent" and lifecycle == "completed":
             if active_nonspawn_item is None:
                 raise ProviderError("collaboration item completed without a start")
-            if active_nonspawn_item != (tool, tuple(receivers)):
+            expected_tool, expected_receivers, expected_prompt = active_nonspawn_item
+            if expected_tool != tool:
                 raise ProviderError(
                     "terminal collaboration item disagreed with its start"
+                )
+            if tool == "wait":
+                if not set(receivers).issubset(expected_receivers):
+                    raise ProviderError(
+                        "terminal collaboration item disagreed with its start"
+                    )
+            elif tuple(receivers) != expected_receivers:
+                raise ProviderError(
+                    "terminal collaboration item disagreed with its start"
+                )
+            if tool == "sendInput" and prompt_digest != expected_prompt:
+                raise ProviderError(
+                    "terminal sendInput prompt disagreed with its start"
                 )
         if tool == "spawnAgent":
             if lifecycle == "started" and receivers:
@@ -2501,6 +2520,8 @@ class _AppServerProtocol:
                 for claimed_receiver in receivers:
                     self._collab_parent_ids[claimed_receiver] = sender
                 self._collab_thread_ids.update(receivers)
+                if status == "completed":
+                    self._completed_spawn_edges.add((sender, receivers[0]))
         elif any(
             receiver != self._thread_id and receiver not in self._collab_thread_ids
             for receiver in receivers
@@ -2538,6 +2559,22 @@ class _AppServerProtocol:
                     and receiver in self._collab_thread_ids
                     and receiver not in agent_statuses
                 )
+            if (
+                lifecycle == "completed"
+                and tool == "closeAgent"
+                and status == "completed"
+            ):
+                closed = set(receivers)
+                while True:
+                    descendants = {
+                        thread_id
+                        for thread_id, parent_id in self._collab_parent_ids.items()
+                        if parent_id in closed
+                    }
+                    if descendants <= closed:
+                        break
+                    closed.update(descendants)
+                self._active_collab_thread_ids.difference_update(closed)
         if lifecycle != "snapshot" and status in {"completed", "failed"}:
             if len(self._terminal_collab_item_ids) >= _MAX_MESSAGES:
                 raise ProviderError(
@@ -2551,13 +2588,17 @@ class _AppServerProtocol:
                 and len(self._active_nonspawn_items) >= _MAX_MESSAGES
             ):
                 raise ProviderError("active collaboration item count exceeds the limit")
-            self._active_nonspawn_items[item_scope] = (tool, tuple(receivers))
+            self._active_nonspawn_items[item_scope] = (
+                tool,
+                tuple(receivers),
+                prompt_digest,
+            )
         elif lifecycle == "completed" and tool != "spawnAgent":
             self._active_nonspawn_items.pop(item_scope, None)
 
     def _validate_completed_turn(
         self, turn: dict[str, Any], owner_thread_id: str
-    ) -> None:
+    ) -> str:
         status = _require_string(turn.get("status"), "completed turn status")
         if status not in {"completed", "interrupted", "failed"}:
             raise ProviderError("completed turn has a non-terminal status")
@@ -2575,6 +2616,7 @@ class _AppServerProtocol:
                 owner_thread_id=owner_thread_id,
                 lifecycle="snapshot",
             )
+        return status
 
     @staticmethod
     def _validate_message_phase(value: Any) -> str | None:
@@ -2777,6 +2819,13 @@ class _AppServerProtocol:
                 ):
                     raise ProviderError(
                         "Codex summary message disagrees with its completion event"
+                    )
+                if any(
+                    message["phase"] == "final_answer"
+                    for message in self._completed_messages[summary_index + 1 :]
+                ):
+                    raise ProviderError(
+                        "Codex summary omitted a completed final-answer message"
                     )
                 messages = self._completed_messages[: summary_index + 1]
         else:
@@ -4140,32 +4189,89 @@ def _open_workspace_runtime_directory(
 
 def _clear_workspace_runtime_directory(descriptor: int) -> None:
     os.fchmod(descriptor, _PRIVATE_DIRECTORY_MODE)
-    for name in os.listdir(descriptor):
-        metadata = os.stat(name, dir_fd=descriptor, follow_symlinks=False)
-        if stat.S_ISDIR(metadata.st_mode):
-            child_descriptor = _open_workspace_runtime_directory(
-                descriptor,
-                name,
-                (metadata.st_dev, metadata.st_ino),
+    root = os.fstat(descriptor)
+    stack: list[tuple[list[str], int, str | None, tuple[int, int]]] = [
+        (os.listdir(descriptor), 0, None, (root.st_dev, root.st_ino))
+    ]
+    current_descriptor = descriptor
+    flags = os.O_RDONLY | os.O_CLOEXEC | os.O_DIRECTORY | os.O_NOFOLLOW
+    try:
+        while stack:
+            names, index, name, identity = stack[-1]
+            if index < len(names):
+                child_name = names[index]
+                stack[-1] = (names, index + 1, name, identity)
+                metadata = os.stat(
+                    child_name,
+                    dir_fd=current_descriptor,
+                    follow_symlinks=False,
+                )
+                if not stat.S_ISDIR(metadata.st_mode):
+                    os.unlink(child_name, dir_fd=current_descriptor)
+                    continue
+                child_descriptor = _open_workspace_runtime_directory(
+                    current_descriptor,
+                    child_name,
+                    (metadata.st_dev, metadata.st_ino),
+                )
+                try:
+                    child_identity = os.fstat(child_descriptor)
+                    os.fchmod(child_descriptor, _PRIVATE_DIRECTORY_MODE)
+                    child_names = os.listdir(child_descriptor)
+                except BaseException:
+                    os.close(child_descriptor)
+                    raise
+                if current_descriptor != descriptor:
+                    os.close(current_descriptor)
+                current_descriptor = child_descriptor
+                stack.append(
+                    (
+                        child_names,
+                        0,
+                        child_name,
+                        (child_identity.st_dev, child_identity.st_ino),
+                    )
+                )
+                continue
+
+            if len(stack) == 1:
+                break
+            stack.pop()
+            parent_identity = stack[-1][3]
+            parent_descriptor = (
+                descriptor
+                if len(stack) == 1
+                else os.open("..", flags, dir_fd=current_descriptor)
             )
             try:
-                child_identity = os.fstat(child_descriptor)
-                _clear_workspace_runtime_directory(child_descriptor)
-                current = os.stat(name, dir_fd=descriptor, follow_symlinks=False)
-                if (current.st_dev, current.st_ino) != (
-                    child_identity.st_dev,
-                    child_identity.st_ino,
-                ):
+                observed_parent = os.fstat(parent_descriptor)
+                if (observed_parent.st_dev, observed_parent.st_ino) != parent_identity:
+                    raise ProviderError(
+                        "workspace runtime parent directory identity changed"
+                    )
+                assert name is not None
+                current = os.stat(
+                    name,
+                    dir_fd=parent_descriptor,
+                    follow_symlinks=False,
+                )
+                if (current.st_dev, current.st_ino) != identity:
                     raise ProviderError("workspace runtime directory identity changed")
-                os.rmdir(name, dir_fd=descriptor)
-                if os.fstat(child_descriptor).st_nlink != 0:
+                os.rmdir(name, dir_fd=parent_descriptor)
+                if os.fstat(current_descriptor).st_nlink != 0:
                     raise ProviderError(
                         "workspace runtime directory removal was replaced"
                     )
-            finally:
-                os.close(child_descriptor)
-        else:
-            os.unlink(name, dir_fd=descriptor)
+            except BaseException:
+                if parent_descriptor != descriptor:
+                    os.close(parent_descriptor)
+                raise
+            os.close(current_descriptor)
+            current_descriptor = parent_descriptor
+    except BaseException:
+        if current_descriptor != descriptor:
+            os.close(current_descriptor)
+        raise
 
 
 def _cleanup_workspace_runtime(runtime: _WorkspaceRuntime) -> None:

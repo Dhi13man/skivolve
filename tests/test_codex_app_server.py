@@ -5010,6 +5010,10 @@ class CodexProviderTests(unittest.TestCase):
         self.assertIn(f'"{self.runtime / "codex-home" / "auth.json"}" = "deny"', text)
         self.assertIn(f'"{self.runtime / "codex-home" / "config.toml"}" = "deny"', text)
         self.assertIn(f'HOME = "{self.runtime / "work" / ".skill-eval-home"}"', text)
+        self.assertEqual(
+            config["shell_environment_policy"]["set"]["PYTHONDONTWRITEBYTECODE"],
+            "1",
+        )
         self.assertIn(f'"{self.runtime / "work"}" = "write"', text)
         self.assertIn(f'"{self.runtime / "work" / ".skill-eval-tmp"}" = "write"', text)
         self.assertIn(

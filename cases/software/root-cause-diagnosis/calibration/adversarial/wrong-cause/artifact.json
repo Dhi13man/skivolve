@@ -1,0 +1,10 @@
+{
+  "verdict": "failed",
+  "root_cause": "A stale cache caused the failure.",
+  "evidence": [
+    "failure.log:2",
+    "worker.py:2-3"
+  ],
+  "verification": "Run outcome(0) in the supplied worker module; expect `ok`.",
+  "unverified": "No broader behavior specification or test suite was supplied."
+}

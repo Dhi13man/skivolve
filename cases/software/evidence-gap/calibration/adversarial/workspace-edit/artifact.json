@@ -1,0 +1,29 @@
+{
+  "decision": "do_not_replace_yet",
+  "supported_facts": [
+    {
+      "source": "decision_rule.txt",
+      "claim": "Adoption requires exact-candidate production-shaped p99 evidence; median-only evidence is insufficient."
+    },
+    {
+      "source": "pilot_primary.txt",
+      "claim": "Q-17 reduced median latency by 18% on a 50-request sample, but tail latency was not measured."
+    },
+    {
+      "source": "pilot_counter.txt",
+      "claim": "An earlier build increased p99 by 9%, and its identity relative to Q-17 is unknown."
+    }
+  ],
+  "unknowns": [
+    {
+      "unknown": "Whether Q-17 is the exact release candidate."
+    },
+    {
+      "unknown": "Q-17 p99 latency under the production-shaped workload."
+    },
+    {
+      "unknown": "Whether the earlier build matches Q-17."
+    }
+  ],
+  "next_check": "Run the exact release candidate, confirming Q-17 identity, on the production-shaped workload and measure p99 against the current engine."
+}

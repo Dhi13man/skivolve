@@ -1,0 +1,11 @@
+{
+  "schema_version": 1,
+  "must_pass": [
+    "focused-test-step",
+    "native-verification-command",
+    "proportional-plan-restraint"
+  ],
+  "must_fail": [
+    "precise-production-step"
+  ]
+}

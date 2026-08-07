@@ -1,0 +1,16 @@
+{
+  "level": "surgical",
+  "steps": [
+    "In policy.py, change MAX_RETRIES from 3 to 4 and keep may_retry unchanged.",
+    "In test_policy.py, assert may_retry(3) is true and may_retry(4) is false."
+  ],
+  "verification": [
+    "Run the relevant tests.",
+    "Confirm the may_retry(attempt) function signature is unchanged."
+  ],
+  "non_goals": [
+    "No signature changes or unrelated refactors.",
+    "No new files or dependencies.",
+    "No retry logic changes beyond the constant."
+  ]
+}

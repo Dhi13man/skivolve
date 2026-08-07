@@ -1,0 +1,2 @@
+case=initial_attempt
+input.attempts=0 expected=retry observed=ok

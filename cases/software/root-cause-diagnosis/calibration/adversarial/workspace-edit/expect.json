@@ -1,0 +1,11 @@
+{
+  "schema_version": 1,
+  "must_pass": [
+    "concrete-root-cause",
+    "minimal-line-evidence",
+    "reproducible-verification-check"
+  ],
+  "must_fail": [
+    "diagnostic-report-restraint"
+  ]
+}

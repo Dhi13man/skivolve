@@ -200,6 +200,61 @@ class SoftwareCalibrationExpectationTests(unittest.TestCase):
             with self.assertRaisesRegex(AssertionError, "lack apply.py"):
                 SOFTWARE.discover_good_variants(root)
 
+    def test_final_output_variant_discovery_requires_artifacts(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            for name in ("adversarial/verbose", "bad", "good", "good-shaped"):
+                root.joinpath(name).mkdir(parents=True)
+                root.joinpath(name, "artifact.json").write_text("{}", encoding="utf-8")
+            self.assertEqual(
+                SOFTWARE.discover_good_variants(root, "final_output_json"),
+                ("good", "good-shaped"),
+            )
+            self.assertEqual(
+                SOFTWARE.discover_variants(root, "final_output_json"),
+                ("adversarial/verbose", "bad", "good", "good-shaped"),
+            )
+            root.joinpath("good-shaped", "artifact.json").unlink()
+            with self.assertRaisesRegex(AssertionError, "lack artifact.json"):
+                SOFTWARE.discover_good_variants(root, "final_output_json")
+
+    def test_workspace_fingerprint_detects_mode_and_content_changes(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            workspace = Path(temporary)
+            target = workspace / "value.txt"
+            target.write_text("first\n", encoding="utf-8")
+            initial = SOFTWARE.workspace_fingerprint(workspace)
+            workspace.chmod(workspace.stat().st_mode | stat.S_IWGRP)
+            after_root_mode = SOFTWARE.workspace_fingerprint(workspace)
+            target.chmod(target.stat().st_mode | stat.S_IXUSR)
+            after_mode = SOFTWARE.workspace_fingerprint(workspace)
+            target.write_text("second\n", encoding="utf-8")
+            after_content = SOFTWARE.workspace_fingerprint(workspace)
+        self.assertNotEqual(initial, after_root_mode)
+        self.assertNotEqual(after_root_mode, after_mode)
+        self.assertNotEqual(after_mode, after_content)
+
+    def test_workspace_fingerprint_frames_tree_entries(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            left = root / "left"
+            right = root / "right"
+            left.mkdir()
+            right.mkdir()
+            left_file = left / "a"
+            right_file = right / "a"
+            appended_file = right / "b"
+            right_file.write_bytes(b"")
+            appended_file.write_bytes(b"")
+            left_file.write_bytes(
+                b"b" + appended_file.lstat().st_mode.to_bytes(4, "big") + b"file\0"
+            )
+
+            self.assertNotEqual(
+                SOFTWARE.workspace_fingerprint(left),
+                SOFTWARE.workspace_fingerprint(right),
+            )
+
     def test_expectation_opt_in_requires_every_variant(self) -> None:
         variants = ("good", "bad", "adversarial/reflection")
         with tempfile.TemporaryDirectory() as temporary:
@@ -222,11 +277,8 @@ class SoftwareCalibrationExpectationTests(unittest.TestCase):
             if case["skill"] != "engineering":
                 continue
             calibration_root = (SUITE_ROOT / case["prompt_file"]).parent / "calibration"
-            variants = tuple(
-                sorted(
-                    path.parent.relative_to(calibration_root).as_posix()
-                    for path in calibration_root.rglob("apply.py")
-                )
+            variants = SOFTWARE.discover_variants(
+                calibration_root, case["artifact_contract"]["kind"]
             )
             if any(
                 calibration_root.joinpath(variant, "expect.json").is_file()
@@ -239,10 +291,59 @@ class SoftwareCalibrationExpectationTests(unittest.TestCase):
             {
                 "software-behavioral-subtyping",
                 "software-domain-simplicity",
+                "software-evidence-gap",
                 "software-knowledge-boundary",
+                "software-compatibility-decision",
+                "software-root-cause-diagnosis",
                 "software-secure-archive-restore",
+                "software-surgical-plan",
             },
         )
+
+    def test_final_output_corpora_have_shape_and_mutation_sensitivity(self) -> None:
+        manifest = json.loads((SUITE_ROOT / "suite.json").read_text(encoding="utf-8"))
+        cases = {
+            case["id"]: case
+            for case in manifest["cases"]
+            if case["skill"] == "engineering"
+            and case["artifact_contract"]["kind"] == "final_output_json"
+        }
+        self.assertEqual(
+            set(cases),
+            {
+                "software-compatibility-decision",
+                "software-evidence-gap",
+                "software-root-cause-diagnosis",
+                "software-surgical-plan",
+            },
+        )
+        for case_id, case in cases.items():
+            with self.subTest(case_id=case_id):
+                calibration_root = (
+                    SUITE_ROOT / case["prompt_file"]
+                ).parent / "calibration"
+                self.assertEqual(
+                    len(
+                        SOFTWARE.discover_good_variants(
+                            calibration_root, "final_output_json"
+                        )
+                    ),
+                    7,
+                )
+                isolated_failures = set()
+                for variant in SOFTWARE.discover_variants(
+                    calibration_root, "final_output_json"
+                ):
+                    expectation = SOFTWARE.load_expectation(
+                        calibration_root / variant / "expect.json"
+                    )
+                    self.assertIsNotNone(expectation, variant)
+                    assert expectation is not None
+                    if len(expectation["must_fail"]) == 1:
+                        isolated_failures.update(expectation["must_fail"])
+                self.assertEqual(isolated_failures, set(case["critical_expectations"]))
+                mutation = calibration_root / "adversarial/workspace-edit"
+                self.assertTrue(mutation.joinpath("apply.py").is_file())
 
     def test_secure_archive_expectations_cover_every_critical_assertion(self) -> None:
         manifest = json.loads((SUITE_ROOT / "suite.json").read_text(encoding="utf-8"))

@@ -1,0 +1,1 @@
+{"schema_version":1,"must_pass":["pointed-public-choice","consumer-conflict-grounding","ask-and-stop-restraint"],"must_fail":["safe-default-recommendation"]}

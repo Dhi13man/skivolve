@@ -1,0 +1,1 @@
+{"verdict":"failed","root_cause":"The >= 0 condition includes zero, so outcome(0) returns ok instead of retry.","evidence":["failure.log:2","worker.py:2-3"],"verification":"Run outcome(0) in the supplied worker module; expect `ok`.","unverified":"The broader test suite is not missing, and all behavior is verified."}

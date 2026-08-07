@@ -4400,7 +4400,7 @@ def _static_config(root: Path, model: str, reasoning_effort: str) -> bytes:
         "",
         "[shell_environment_policy]",
         'inherit = "none"',
-        f'set = {{ PATH = {_toml_string(f"{tools}/bin:{tools}/codex-path:{tools}/codex-resources:{tools}/codex-resources/zsh/bin:{tools}/required:/usr/bin:/bin")}, HOME = {_toml_string(str(home_directory))}, LANG = "C.UTF-8", TMPDIR = {_toml_string(str(temp_directory))}, XDG_CACHE_HOME = {_toml_string(str(cache_directory))} }}',
+        f'set = {{ PATH = {_toml_string(f"{tools}/bin:{tools}/codex-path:{tools}/codex-resources:{tools}/codex-resources/zsh/bin:{tools}/required:/usr/bin:/bin")}, HOME = {_toml_string(str(home_directory))}, LANG = "C.UTF-8", PYTHONDONTWRITEBYTECODE = "1", TMPDIR = {_toml_string(str(temp_directory))}, XDG_CACHE_HOME = {_toml_string(str(cache_directory))} }}',
         "",
         "[permissions.eval]",
         'description = "Isolated Skivolve execution"',

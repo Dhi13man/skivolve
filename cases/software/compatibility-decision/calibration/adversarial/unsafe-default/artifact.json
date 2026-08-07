@@ -1,0 +1,7 @@
+{
+  "status": "blocked",
+  "question": "Should v3 keep account_id and created_at while South migrates, or should an owner authorize legacy accountId and createdAt output?",
+  "recommendation": "Switch v3 to legacy names now.",
+  "reason": "North requires public v3 account_id and created_at, while South requires legacy accountId and createdAt; no migration owner or date resolves the conflict.",
+  "actions_taken": "No files were edited; the workspace is unchanged."
+}

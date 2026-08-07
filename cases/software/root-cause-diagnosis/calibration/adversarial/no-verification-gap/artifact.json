@@ -1,0 +1,11 @@
+{
+  "evidence": [
+    "failure.log:2 reports expected `retry` and observed `ok` for attempts=0.",
+    "worker.py:2-3 routes all nonnegative attempts, including 0, to `\"ok\"`.",
+    "Direct evaluation produced `outcome(0)=ok`; boundary values were `(-1, retry), (0, ok), (1, ok)`."
+  ],
+  "root_cause": "The condition `attempts >= 0` includes zero, so `outcome(0)` returns `\"ok\"` instead of the expected `\"retry\"`.",
+  "unverified": "No remaining gap; everything is fully verified.",
+  "verdict": "failed",
+  "verification": "Run outcome(0) in the supplied worker module; expect `ok`."
+}

@@ -1,0 +1,10 @@
+{
+  "evidence": [
+    "failure.log:2 reports expected retry and observed ok for attempts=0.",
+    "worker.py:2-3 routes every attempts >= 0, including 0, to ok."
+  ],
+  "root_cause": "attempts >= 0 includes zero, but outcome(0) returns retry and the condition is correct.",
+  "unverified": "The original check command and its broader environment were not supplied.",
+  "verdict": "failed because outcome(0) returns ok",
+  "verification": "Run outcome(0) in the supplied worker module; expect `ok`."
+}

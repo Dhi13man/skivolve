@@ -1,0 +1,10 @@
+{
+  "verdict": "failed",
+  "root_cause": "The >= 0 condition includes zero, so outcome(0) returns ok instead of retry.",
+  "evidence": [
+    "failure.log:2",
+    "worker.py:2-3"
+  ],
+  "verification": "I did not directly inspect the files or perform any check.",
+  "unverified": "No broader behavior specification or test suite was supplied."
+}

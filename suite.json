@@ -666,6 +666,226 @@
       }
     },
     {
+      "id": "software-compatibility-decision",
+      "skill": "engineering",
+      "bundle_source": "skills/engineering",
+      "artifact_contract": {
+        "kind": "final_output_json"
+      },
+      "split": "validation",
+      "prompt_file": "cases/software/compatibility-decision/prompt.md",
+      "fixture_dir": "cases/software/compatibility-decision/fixture",
+      "verifier": {
+        "argv": [
+          "python3",
+          "cases/software/compatibility-decision/oracle/verify.py"
+        ],
+        "required_tools": [],
+        "timeout_seconds": 10
+      },
+      "context_files": [
+        "skills/engineering/SKILL.md"
+      ],
+      "timeout_seconds": 180,
+      "critical_expectations": [
+        "pointed-public-choice",
+        "safe-default-recommendation",
+        "consumer-conflict-grounding",
+        "ask-and-stop-restraint"
+      ],
+      "comparator_contract": {
+        "requirements": [
+          {
+            "id": "pointed-public-choice",
+            "kind": "required_behavior",
+            "text": "Ask one concrete either/or question that contrasts preserving the public v3 field names with authorizing a legacy-name migration."
+          },
+          {
+            "id": "safe-default-recommendation",
+            "kind": "required_behavior",
+            "text": "Recommend preserving the current v3 names until an owner decides the migration."
+          },
+          {
+            "id": "consumer-conflict-grounding",
+            "kind": "required_behavior",
+            "text": "Ground the block in North's deployed v3 dependency, South's legacy-name dependency, the public wire contract, and the missing migration owner or date."
+          },
+          {
+            "id": "ask-and-stop-restraint",
+            "kind": "hard_constraint",
+            "text": "Return exactly status, question, recommendation, reason, and actions_taken; record that no change was made and leave the workspace unchanged."
+          }
+        ],
+        "performance_basis": null,
+        "qualitative_bases": {}
+      }
+    },
+    {
+      "id": "software-root-cause-diagnosis",
+      "skill": "engineering",
+      "bundle_source": "skills/engineering",
+      "artifact_contract": {
+        "kind": "final_output_json"
+      },
+      "split": "validation",
+      "prompt_file": "cases/software/root-cause-diagnosis/prompt.md",
+      "fixture_dir": "cases/software/root-cause-diagnosis/fixture",
+      "verifier": {
+        "argv": [
+          "python3",
+          "cases/software/root-cause-diagnosis/oracle/verify.py"
+        ],
+        "required_tools": [],
+        "timeout_seconds": 10
+      },
+      "context_files": [
+        "skills/engineering/SKILL.md"
+      ],
+      "timeout_seconds": 180,
+      "critical_expectations": [
+        "concrete-root-cause",
+        "minimal-line-evidence",
+        "reproducible-verification-check",
+        "diagnostic-report-restraint"
+      ],
+      "comparator_contract": {
+        "requirements": [
+          {
+            "id": "concrete-root-cause",
+            "kind": "required_behavior",
+            "text": "Identify that the inclusive nonnegative condition classifies attempts=0 as ok instead of retry."
+          },
+          {
+            "id": "minimal-line-evidence",
+            "kind": "required_behavior",
+            "text": "Cite the failing observation at failure.log:2 and the causal condition at worker.py:2 using two or three bounded evidence entries."
+          },
+          {
+            "id": "reproducible-verification-check",
+            "kind": "required_behavior",
+            "text": "State one reproducible local check with its expected observation, grounded by the supplied fixture, and name a real remaining gap such as the absent broader specification or test suite."
+          },
+          {
+            "id": "diagnostic-report-restraint",
+            "kind": "hard_constraint",
+            "text": "Return exactly verdict, root_cause, evidence, verification, and unverified; do not patch, document, redesign, or otherwise mutate the workspace."
+          }
+        ],
+        "performance_basis": null,
+        "qualitative_bases": {}
+      }
+    },
+    {
+      "id": "software-surgical-plan",
+      "skill": "engineering",
+      "bundle_source": "skills/engineering",
+      "artifact_contract": {
+        "kind": "final_output_json"
+      },
+      "split": "validation",
+      "prompt_file": "cases/software/surgical-plan/prompt.md",
+      "fixture_dir": "cases/software/surgical-plan/fixture",
+      "verifier": {
+        "argv": [
+          "python3",
+          "cases/software/surgical-plan/oracle/verify.py"
+        ],
+        "required_tools": [],
+        "timeout_seconds": 10
+      },
+      "context_files": [
+        "skills/engineering/SKILL.md"
+      ],
+      "timeout_seconds": 180,
+      "critical_expectations": [
+        "precise-production-step",
+        "focused-test-step",
+        "native-verification-command",
+        "proportional-plan-restraint"
+      ],
+      "comparator_contract": {
+        "requirements": [
+          {
+            "id": "precise-production-step",
+            "kind": "required_behavior",
+            "text": "Plan the exact policy.py MAX_RETRIES change from 3 to 4 while preserving may_retry and its signature."
+          },
+          {
+            "id": "focused-test-step",
+            "kind": "required_behavior",
+            "text": "Plan the existing test_policy.py boundary update so attempt 3 is accepted and attempt 4 is rejected."
+          },
+          {
+            "id": "native-verification-command",
+            "kind": "required_behavior",
+            "text": "Name an executable Python unittest command targeting test_policy.py."
+          },
+          {
+            "id": "proportional-plan-restraint",
+            "kind": "hard_constraint",
+            "text": "Return exactly level, steps, verification, and non_goals at surgical scope; add no files, dependencies, unrelated work, or workspace edits."
+          }
+        ],
+        "performance_basis": null,
+        "qualitative_bases": {}
+      }
+    },
+    {
+      "id": "software-evidence-gap",
+      "skill": "engineering",
+      "bundle_source": "skills/engineering",
+      "artifact_contract": {
+        "kind": "final_output_json"
+      },
+      "split": "validation",
+      "prompt_file": "cases/software/evidence-gap/prompt.md",
+      "fixture_dir": "cases/software/evidence-gap/fixture",
+      "verifier": {
+        "argv": [
+          "python3",
+          "cases/software/evidence-gap/oracle/verify.py"
+        ],
+        "required_tools": [],
+        "timeout_seconds": 10
+      },
+      "context_files": [
+        "skills/engineering/SKILL.md"
+      ],
+      "timeout_seconds": 180,
+      "critical_expectations": [
+        "balanced-source-facts",
+        "material-uncertainty",
+        "decision-resolving-check",
+        "research-output-restraint"
+      ],
+      "comparator_contract": {
+        "requirements": [
+          {
+            "id": "balanced-source-facts",
+            "kind": "required_behavior",
+            "text": "Represent source-and-claim facts covering Q-17's 18% median result, its missing tail measurement, and the earlier build's 9% p99 regression."
+          },
+          {
+            "id": "material-uncertainty",
+            "kind": "required_behavior",
+            "text": "Keep the exact release identity and production-shaped p99 evidence as explicit unknowns."
+          },
+          {
+            "id": "decision-resolving-check",
+            "kind": "required_behavior",
+            "text": "Propose measuring p99 for the exact release candidate on the production-shaped workload, optionally against the current engine."
+          },
+          {
+            "id": "research-output-restraint",
+            "kind": "hard_constraint",
+            "text": "Do not recommend replacement yet; return exactly decision, supported_facts, unknowns, and next_check using only supplied sources, no confidence score, and no workspace edits."
+          }
+        ],
+        "performance_basis": null,
+        "qualitative_bases": {}
+      }
+    },
+    {
       "id": "testing-oracle-sensitivity",
       "skill": "testing",
       "bundle_source": "skills/testing",

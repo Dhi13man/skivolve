@@ -28,11 +28,14 @@ TEST_TARGETS = {
 }
 
 
-def _apply_known_good(case_id: str, workspace: Path) -> None:
+def _apply_known_good(case_id: str, workspace: Path) -> str:
     if case_id.startswith("software-"):
         case_directory = (
             SUITE_ROOT / "cases" / "software" / case_id.removeprefix("software-")
         )
+        artifact = case_directory / "calibration" / "good" / "artifact.json"
+        if artifact.is_file():
+            return artifact.read_text(encoding="utf-8")
         apply_script = case_directory / "calibration" / "good" / "apply.py"
         completed = subprocess.run(
             [sys.executable, str(apply_script), str(workspace)],
@@ -47,13 +50,14 @@ def _apply_known_good(case_id: str, workspace: Path) -> None:
             raise RuntimeError(
                 f"{case_id} known-good patch failed: {completed.stderr.strip()}"
             )
-        return
+        return "Applied the checked-in known-good calibration."
     case_directory = SUITE_ROOT / "cases" / "testing" / case_id.removeprefix("testing-")
     target = TEST_TARGETS[case_id]
     shutil.copyfile(
         case_directory / "calibration" / "good" / target,
         workspace / target,
     )
+    return "Applied the checked-in known-good calibration."
 
 
 def main() -> int:
@@ -68,9 +72,9 @@ def main() -> int:
     suite = load_suite(SUITE_ROOT / "suite.json")
 
     def agent(request):
-        _apply_known_good(request.case_id, request.workspace)
+        final_output = _apply_known_good(request.case_id, request.workspace)
         return {
-            "final_output": "Applied the checked-in known-good calibration.",
+            "final_output": final_output,
             "actual_models": [request.model],
             "cost_usd": 0.0,
             "tokens": {"input_tokens": 0, "output_tokens": 0},

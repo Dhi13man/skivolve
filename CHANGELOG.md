@@ -4,6 +4,10 @@ All notable changes to Skivolve are documented in this file. The format follows 
 
 ## [Unreleased]
 
+### Added
+
+- Added four calibrated final-output cases for compatibility decisions, read-only diagnoses, surgical plans, and evidence-gap research, with transient workspace-write evidence and unseen positive paraphrases guarding against oracle overfitting.
+
 ### Changed
 
 - Refreshed the Codex app-server runtime lock from 0.144.3 to 0.146.0, including the executable, bundled tools, and generated protocol schema.

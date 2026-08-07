@@ -1,0 +1,10 @@
+{
+  "evidence": [
+    "failure.log:2 is irrelevant.",
+    "worker.py:2 does not contain the causal line."
+  ],
+  "root_cause": "The condition `attempts >= 0` includes zero, so `outcome(0)` returns `\"ok\"` instead of the expected `\"retry\"`.",
+  "unverified": "The original check command and its broader environment were not supplied.",
+  "verdict": "failed",
+  "verification": "Run outcome(0) in the supplied worker module; expect `ok`."
+}

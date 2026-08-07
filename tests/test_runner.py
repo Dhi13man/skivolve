@@ -2903,6 +2903,28 @@ print(json.dumps({"passed": True, "assertions": [
             self.assertTrue(arm["verifier"]["workspace_mutated"])
             self.assertNotIn("verifier-created.txt", arm["diff"])
 
+    def test_workspace_diff_excludes_generated_agent_caches(self) -> None:
+        provider = self.fixture.provider()
+        original_handler = provider._agent_handler
+
+        def create_cache(request):
+            result = original_handler(request)
+            cache = request.workspace / "__pycache__"
+            cache.mkdir()
+            (cache / "note.pyc").write_bytes(b"generated cache")
+            return result
+
+        provider._agent_handler = create_cache
+        result = self.runner(provider).run(
+            RunSelection(comparison_ids=("without-current",)),
+            output_dir=self.output("agent-cache-diff"),
+        )
+
+        self.assertTrue(result["passed"], result)
+        for arm in result["pairs"][0]["arms"].values():
+            self.assertTrue(arm["verifier"]["sandbox"]["agent_workspace_mutated"])
+            self.assertNotIn("__pycache__", arm["diff"])
+
     def test_run_when_artifact_is_final_text_keeps_workspace_read_only(self) -> None:
         # Arrange
         self.fixture.use_objective()
@@ -3038,6 +3060,7 @@ except OSError:
 passed = (
     content == b'{"a":1,"b":2}'
     and os.environ["EVAL_ARTIFACT_KIND"] == "final_output_json"
+    and os.environ["EVAL_AGENT_WORKSPACE_MUTATED"] == "1"
     and os.environ["EVAL_ARTIFACT_SHA256"] == hashlib.sha256(content).hexdigest()
     and (workspace / "input.txt").read_text(encoding="utf-8") == "original\\n"
     and not (workspace / "poison.txt").exists()
@@ -3085,7 +3108,116 @@ print(json.dumps({
             )
             self.assertTrue(arm["verifier"]["artifact"]["read_only"])
             self.assertTrue(arm["verifier"]["sandbox"]["workspace_read_only"])
+            self.assertTrue(arm["verifier"]["sandbox"]["agent_workspace_mutated"])
             self.assertFalse(arm["verifier"]["workspace_mutated"])
+
+    def test_final_output_mutation_signal_covers_all_workspace_entries(
+        self,
+    ) -> None:
+        self.fixture.use_objective(artifact_kind="final_output_json")
+        self.fixture.set_verifier(
+            """import json
+import os
+
+passed = os.environ["EVAL_AGENT_WORKSPACE_MUTATED"] == "1"
+print(json.dumps({
+    "passed": passed,
+    "assertions": [{
+        "id": "answer-present",
+        "passed": passed,
+        "evidence": "agent workspace mutation signal",
+    }],
+    "metrics": {},
+}))
+"""
+        )
+        self.fixture.save_manifest()
+
+        def create_empty_directory(workspace: Path) -> None:
+            (workspace / "empty").mkdir()
+
+        def remove_owner_write_permission(workspace: Path) -> None:
+            (workspace / "input.txt").chmod(0o444)
+
+        def create_cache_file(workspace: Path) -> None:
+            cache = workspace / "__pycache__"
+            cache.mkdir()
+            (cache / "note.txt").write_text("agent-created\n", encoding="utf-8")
+
+        def mutate_then_restore_file(workspace: Path) -> None:
+            target = workspace / "input.txt"
+            original = target.read_bytes()
+            target.write_bytes(b"transient mutation\n")
+            target.write_bytes(original)
+
+        mutations = (
+            ("empty-directory", create_empty_directory),
+            ("file-permission", remove_owner_write_permission),
+            ("cache-file", create_cache_file),
+            ("transient-write", mutate_then_restore_file),
+        )
+        for name, mutate in mutations:
+            with self.subTest(name=name):
+
+                def json_output(request):
+                    mutate(request.workspace)
+                    return '{"a": 1}'
+
+                result = EvalRunner(
+                    self.load(), FakeProvider(agent_handler=json_output)
+                ).run(
+                    RunSelection(comparison_ids=("without-current",)),
+                    output_dir=self.output(f"final-json-{name}"),
+                )
+
+                self.assertTrue(result["passed"], result)
+                for arm in result["pairs"][0]["arms"].values():
+                    self.assertTrue(
+                        arm["verifier"]["sandbox"]["agent_workspace_mutated"]
+                    )
+
+    def test_final_output_without_workspace_mutation_reports_false(self) -> None:
+        self.fixture.use_objective(artifact_kind="final_output_json")
+        self.fixture.set_verifier(
+            """import json
+import os
+
+passed = os.environ["EVAL_AGENT_WORKSPACE_MUTATED"] == "0"
+print(json.dumps({
+    "passed": passed,
+    "assertions": [{
+        "id": "answer-present",
+        "passed": passed,
+        "evidence": "agent workspace remained untouched",
+    }],
+    "metrics": {},
+}))
+"""
+        )
+        self.fixture.save_manifest()
+
+        def use_provider_runtime_scratch(request):
+            for name in (
+                ".skill-eval-cache",
+                ".skill-eval-home",
+                ".skill-eval-tmp",
+            ):
+                scratch = request.workspace / name
+                scratch.mkdir()
+                (scratch / "runtime").write_text("transient\n", encoding="utf-8")
+                shutil.rmtree(scratch)
+            return '{"a": 1}'
+
+        result = EvalRunner(
+            self.load(), FakeProvider(agent_handler=use_provider_runtime_scratch)
+        ).run(
+            RunSelection(comparison_ids=("without-current",)),
+            output_dir=self.output("final-json-no-mutation"),
+        )
+
+        self.assertTrue(result["passed"], result)
+        for arm in result["pairs"][0]["arms"].values():
+            self.assertFalse(arm["verifier"]["sandbox"]["agent_workspace_mutated"])
 
     def test_preflight_when_final_output_is_judged_requires_calibrated_profile(
         self,
@@ -3103,6 +3235,15 @@ print(json.dumps({
 
         self.assertEqual(provider.agent_requests, [])
         self.assertEqual(provider.comparator_requests, [])
+
+        verifier_only = runner.preflight(
+            RunSelection(
+                comparison_ids=("without-current",),
+                verifier_only=True,
+            )
+        )
+        self.assertEqual(verifier_only["execution_mode"], "verifier_only")
+        self.assertIsNone(verifier_only["comparator"])
 
         # Arrange
         for case in self.fixture.manifest["cases"]:
@@ -3381,6 +3522,7 @@ environment_minimal = (
         "EVAL_ARTIFACT_PATH",
         "EVAL_ARTIFACT_KIND",
         "EVAL_ARTIFACT_SHA256",
+        "EVAL_AGENT_WORKSPACE_MUTATED",
         "EVAL_CASE_ROOT",
         "EVAL_TOOL_BIN",
         "EVAL_RESULT_ROOT",
@@ -8051,9 +8193,9 @@ class CheckedInSuiteTests(unittest.TestCase):
     def test_manifest_is_loadable_and_public_cases_are_not_holdouts(self) -> None:
         suite = load_suite(HARNESS_ROOT / "suite.json")
         splits = [case.split for case in suite.cases]
-        self.assertEqual(len(suite.cases), 17)
+        self.assertEqual(len(suite.cases), 21)
         self.assertEqual(splits.count("train"), 10)
-        self.assertEqual(splits.count("validation"), 7)
+        self.assertEqual(splits.count("validation"), 11)
         self.assertNotIn("holdout", splits)
 
     def test_models_and_frozen_original_are_pinned(self) -> None:

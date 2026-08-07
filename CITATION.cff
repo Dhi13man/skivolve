@@ -2,8 +2,8 @@ cff-version: 1.2.0
 message: If you use Skivolve in published work, cite this software release.
 title: Skivolve
 type: software
-version: 0.5.0
-date-released: 2026-07-29
+version: 0.6.0
+date-released: 2026-08-07
 authors:
   - family-names: Seal
     given-names: Dhiman

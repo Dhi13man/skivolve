@@ -6,7 +6,7 @@ All notable changes to Skivolve are documented in this file. The format follows 
 
 ### Added
 
-- Added calibrated final-output cases for compatibility decisions, read-only diagnoses, surgical plans, and evidence-gap research, including verifier evidence when an agent mutates a final-output workspace.
+- Added four calibrated final-output cases for compatibility decisions, read-only diagnoses, surgical plans, and evidence-gap research, with transient workspace-write evidence and unseen positive paraphrases guarding against oracle overfitting.
 
 ### Changed
 

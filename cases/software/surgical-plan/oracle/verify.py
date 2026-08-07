@@ -17,74 +17,6 @@ from final_output import (  # noqa: E402
 
 
 EXPECTED_KEYS = {"level", "steps", "verification", "non_goals"}
-PRODUCTION_STEP_PATTERNS = (
-    r"in policy\.py, change max_retries from 3 to 4(?: and keep may_retry unchanged|; "
-    r"preserve may_retry\(attempt\) unchanged)\.?",
-    r"change policy\.py:1 from max_retries = 3 to max_retries = 4(?: and keep "
-    r"may_retry\(attempt\) unchanged|; leave may_retry\(attempt\) unchanged)?\.?",
-    r"change max_retries from 3 to 4; leave may_retry(?:\(attempt\)|'s signature and "
-    r"logic) unchanged\. policy\.py",
-    r"change only max_retries = 3 to max_retries = 4; preserve may_retry\(attempt\) "
-    r"unchanged\. policy\.py",
-)
-COMMAND_PATTERN = (
-    r"(?:python3? -m unittest(?: -v)? test_policy\.py|python3 test_policy\.py|"
-    r"run python3 -m unittest -v test_policy\.py(?: from the fixture root; "
-    r"(?:test_boundary must pass|expect the boundary test to pass))?)\.?"
-)
-TEST_STEP_PATTERNS = (
-    r"update test_policy\.py so may_retry\(3\) is true and may_retry\(4\) is false\.?",
-    r"in test_policy\.py, (?:assert|update test_boundary to assert) may_retry\(3\) is "
-    r"true and may_retry\(4\) is false\.?",
-    r"update the focused boundary assertions so may_retry\(3\) is true and "
-    r"may_retry\(4\) is false\. test_policy\.py",
-    r"update test_boundary to assert may_retry\(3\) is true and may_retry\(4\) is "
-    r"false\. test_policy\.py",
-    r"update test_policy\.py:8-9 so may_retry\(3\) is true and may_retry\(4\) is false\.?",
-    r"update the focused boundary test so attempts 2 and 3 are accepted, while attempt "
-    r"4 is rejected\. test_policy\.py",
-)
-VERIFICATION_CONFIRMATIONS = {
-    "confirm the may_retry(attempt) function signature is unchanged.",
-    "confirm the function signature remains may_retry(attempt).",
-}
-VERIFICATION_EXPECTATIONS = {
-    "focused boundary test passes.",
-    "test_boundary passes.",
-    "the focused unittest passes with the updated boundary assertions.",
-}
-VERIFICATION_BASELINE = "the native command currently passes before the planned edits."
-VERIFICATION_CHECKS = (
-    "the boundary test passes.",
-    "the function signature is unchanged.",
-    "retry attempts below 4 remain accepted, while attempt 4 is rejected.",
-)
-NON_GOAL_STATEMENTS = {
-    "do not add dependencies, files, or configuration.",
-    "do not add files, dependencies, configuration, refactors, or broader tests.",
-    "do not add tests or dependencies.",
-    "do not add tests, dependencies, files, or configuration.",
-    "do not alter retry logic beyond the constant value.",
-    "do not change lower-bound behavior or unrelated callers.",
-    "do not change public names, signatures, or unrelated files.",
-    "do not change retry backoff, error handling, callers, or dependencies.",
-    "do not change the function signature or retry logic structure.",
-    "do not change the function signature or retry predicate structure.",
-    "do not change the function signature.",
-    "do not change the public signature.",
-    "do not edit the fixture during this planning pass.",
-    "do not modify unrelated files or add new tests.",
-    "do not refactor unrelated retry behavior.",
-    "no changes to retry logic beyond the constant value.",
-    "no changes to retry logic or callers.",
-    "no documentation, refactoring, or broader api changes.",
-    "no fixture edits are made while producing this plan.",
-    "no new dependencies, configuration, documentation, or compatibility behavior.",
-    "no new files or dependencies.",
-    "no new files, dependencies, configuration, or tests.",
-    "no retry logic changes beyond the constant.",
-    "no signature changes or unrelated refactors.",
-}
 
 
 def main() -> None:
@@ -128,21 +60,38 @@ def main() -> None:
     else:
         command_value = ""
     command = flatten_text(command_value).lower().replace("`", "")
-    native_command = bool(re.fullmatch(COMMAND_PATTERN, command))
+    native_command = bool(
+        re.search(
+            r"\bpython3?\s+(?:-m\s+unittest(?:\s+-v)?\s+"
+            r"test_policy(?:\.py)?(?:\s+-v)?|test_policy\.py)\b",
+            command,
+        )
+        and not re.search(
+            r"\b(?:do not|don't|never|unnecessary|skip|print|echo)\b|\s-c\s",
+            command,
+        )
+    )
     if isinstance(verification_value, list):
         verification_items = [
             flatten_text(item).lower().replace("`", "") for item in verification_value
         ]
+        confirmation = verification_items[1] if len(verification_items) == 2 else ""
         verification_schema = (
             len(verification_items) == 2
             and all(isinstance(item, str) for item in verification_value)
-            and verification_items[1] in VERIFICATION_CONFIRMATIONS
+            and "confirm" in confirmation
+            and "signature" in confirmation
+            and re.search(r"\b(?:unchanged|remains?)\b", confirmation)
         )
     elif isinstance(verification_value, dict):
         verification_keys = set(verification_value)
         expected = flatten_text(verification_value.get("expected", "")).lower()
         baseline = flatten_text(verification_value.get("baseline", "")).lower()
         checks = verification_value.get("checks")
+        expected_pass = bool(
+            re.search(r"\b(?:test|boundary|unittest|test_boundary)\b", expected)
+            and re.search(r"\bpass(?:es|ed)?\b", expected)
+        )
         verification_schema = isinstance(verification_value.get("command"), str) and (
             (
                 verification_keys
@@ -151,7 +100,7 @@ def main() -> None:
                     {"command", "expected", "status"},
                 )
                 and isinstance(verification_value.get("expected"), str)
-                and expected in VERIFICATION_EXPECTATIONS
+                and expected_pass
                 and (
                     "status" not in verification_value
                     or verification_value["status"] == "not_run_plan_only"
@@ -161,15 +110,22 @@ def main() -> None:
                 verification_keys == {"baseline", "command", "expected"}
                 and isinstance(verification_value.get("baseline"), str)
                 and isinstance(verification_value.get("expected"), str)
-                and baseline == VERIFICATION_BASELINE
-                and expected in VERIFICATION_EXPECTATIONS
+                and re.search(r"\b(?:native|command)\b", baseline)
+                and re.search(r"\bpass(?:es|ed)?\b", baseline)
+                and re.search(r"\b(?:before|currently)\b", baseline)
+                and expected_pass
             )
             or (
                 verification_keys == {"checks", "command"}
                 and isinstance(checks, list)
                 and all(isinstance(item, str) for item in checks)
-                and tuple(flatten_text(item).lower() for item in checks)
-                == VERIFICATION_CHECKS
+                and len(checks) == 3
+                and "boundary" in flatten_text(checks).lower()
+                and "passes" in flatten_text(checks).lower()
+                and "signature" in flatten_text(checks).lower()
+                and "unchanged" in flatten_text(checks).lower()
+                and "4" in flatten_text(checks)
+                and re.search(r"\b(?:rejected|false)\b", flatten_text(checks).lower())
             )
         )
     else:
@@ -190,18 +146,13 @@ def main() -> None:
         and non_goals_schema
     )
     plan_scope = f"{steps_text} {non_goals_text}"
-    may_retry_preserved = all(
-        "may_retry" not in step
-        or (
-            "test_policy.py" in step
-            and "policy.py" not in step.replace("test_policy.py", "")
-        )
-        or re.search(
-            r"may_retry(?:\(attempt\)|'s signature and logic)? unchanged[.;]?"
-            r"(?: policy\.py)?$",
-            step,
-        )
-        for step in step_texts
+    prohibited_step = re.search(
+        r"\b(?:alter|edit|rewrite)\s+may_retry\b|"
+        r"\bmay_retry\b[^.;]{0,100}\b(?:always|every attempt)\b|"
+        r"\bmax_retries\b[^.;]{0,30}\b4\s+to\s+(?:3|100)\b|"
+        r"\b(?:add|create|delete|replace)\b[^.;]{0,40}"
+        r"\b(?:dependency|config|policy\.py|service)\b",
+        steps_text,
     )
     production_steps = [step for step in step_texts if "max_retries" in step]
     test_steps = [
@@ -210,31 +161,66 @@ def main() -> None:
         if "test_policy.py" in step
         and ("may_retry(3)" in step or "attempts 2 and 3" in step)
     ]
+    preservation_steps = [
+        step
+        for step in step_texts
+        if "may_retry" in step
+        and re.search(r"\b(?:unchanged|preserve|leave|keep)\b", step)
+    ]
     complete_steps = all(
-        step in production_steps
-        or step in test_steps
-        or re.fullmatch(r"keep may_retry\(attempt\) unchanged\.?", step)
+        step in production_steps or step in test_steps or step in preservation_steps
         for step in step_texts
     )
 
     precise_production = (
         bool(step_texts)
         and len(production_steps) == 1
-        and any(
-            re.fullmatch(pattern, production_steps[0])
-            for pattern in PRODUCTION_STEP_PATTERNS
+        and "policy.py" in production_steps[0].replace("test_policy.py", "")
+        and re.search(
+            r"\bmax_retries\b[^.;]{0,35}\b(?:from\s+)?(?:=\s*)?3\b"
+            r"[^.;]{0,35}\b(?:to\s+)?(?:max_retries\s*=\s*)?4\b",
+            production_steps[0],
         )
-        and "may_retry" in steps_text
-        and may_retry_preserved
+        and preservation_steps
+        and prohibited_step is None
         and complete_steps
     )
-    focused_test = len(test_steps) == 1 and any(
-        re.fullmatch(pattern, test_steps[0]) for pattern in TEST_STEP_PATTERNS
+    focused_test = len(test_steps) == 1 and bool(
+        not re.search(
+            r"\bincorrect\b|may_retry\(3\)[^.;]{0,25}\bfalse\b|"
+            r"may_retry\(4\)[^.;]{0,25}\btrue\b",
+            test_steps[0],
+        )
+        and (
+            (
+                re.search(
+                    r"may_retry\(3\)[^.;]{0,35}\b(?:true|accepted)\b",
+                    test_steps[0],
+                )
+                and re.search(
+                    r"may_retry\(4\)[^.;]{0,35}\b(?:false|rejected)\b",
+                    test_steps[0],
+                )
+            )
+            or (
+                re.search(
+                    r"attempts?\s+2\s+and\s+3[^.;]{0,25}\baccepted\b",
+                    test_steps[0],
+                )
+                and re.search(r"attempt\s+4[^.;]{0,25}\brejected\b", test_steps[0])
+            )
+        )
     )
     bounded_non_goals = (
         non_goals_schema
         and all(
-            isinstance(item, str) and item.lower() in NON_GOAL_STATEMENTS
+            isinstance(item, str)
+            and re.match(r"^(?:no|do not)\b", item.lower())
+            and not re.search(
+                r"\b(?:but|then|however)\b[^.;]{0,40}"
+                r"\b(?:add|create|change|edit|rewrite)\b",
+                item.lower(),
+            )
             for item in non_goals
         )
         and any(word in plan_scope for word in ("signature", "public", "unchanged"))

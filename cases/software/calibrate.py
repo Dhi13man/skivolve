@@ -253,17 +253,22 @@ def discover_good_variants(
 
 def workspace_fingerprint(workspace: Path) -> str:
     digest = hashlib.sha256()
+
+    def update(value: bytes) -> None:
+        digest.update(len(value).to_bytes(8, "big"))
+        digest.update(value)
+
     digest.update(workspace.lstat().st_mode.to_bytes(4, "big"))
     for path in sorted(workspace.rglob("*")):
         relative = path.relative_to(workspace).as_posix()
-        digest.update(relative.encode("utf-8"))
+        update(relative.encode("utf-8"))
         digest.update(path.lstat().st_mode.to_bytes(4, "big"))
         if path.is_symlink():
             digest.update(b"symlink\0")
-            digest.update(os.readlink(path).encode("utf-8"))
+            update(os.readlink(path).encode("utf-8"))
         elif path.is_file():
             digest.update(b"file\0")
-            digest.update(path.read_bytes())
+            update(path.read_bytes())
         elif path.is_dir():
             digest.update(b"directory\0")
     return digest.hexdigest()

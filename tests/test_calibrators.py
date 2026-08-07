@@ -234,6 +234,27 @@ class SoftwareCalibrationExpectationTests(unittest.TestCase):
         self.assertNotEqual(after_root_mode, after_mode)
         self.assertNotEqual(after_mode, after_content)
 
+    def test_workspace_fingerprint_frames_tree_entries(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            left = root / "left"
+            right = root / "right"
+            left.mkdir()
+            right.mkdir()
+            left_file = left / "a"
+            right_file = right / "a"
+            appended_file = right / "b"
+            right_file.write_bytes(b"")
+            appended_file.write_bytes(b"")
+            left_file.write_bytes(
+                b"b" + appended_file.lstat().st_mode.to_bytes(4, "big") + b"file\0"
+            )
+
+            self.assertNotEqual(
+                SOFTWARE.workspace_fingerprint(left),
+                SOFTWARE.workspace_fingerprint(right),
+            )
+
     def test_expectation_opt_in_requires_every_variant(self) -> None:
         variants = ("good", "bad", "adversarial/reflection")
         with tempfile.TemporaryDirectory() as temporary:
@@ -307,7 +328,7 @@ class SoftwareCalibrationExpectationTests(unittest.TestCase):
                             calibration_root, "final_output_json"
                         )
                     ),
-                    6,
+                    7,
                 )
                 isolated_failures = set()
                 for variant in SOFTWARE.discover_variants(

@@ -1512,6 +1512,7 @@ class ClaudeCliProvider:
             "SHELL=/bin/bash",
             "TERM=dumb",
             "CI=1",
+            "PYTHONDONTWRITEBYTECODE=1",
             "CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1",
             self._unshare,
             "--user",

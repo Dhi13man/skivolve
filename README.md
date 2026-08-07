@@ -11,7 +11,7 @@ Version `0.5.0` is an alpha release for expert evaluation work on Linux. The pub
 ## What Skivolve Provides
 
 - Git-bound control and treatment sources with drift detection.
-- Seventeen engineering and testing cases with objective, adversarially calibrated verifiers.
+- Twenty-one engineering and testing cases with objective, adversarially calibrated verifiers.
 - Isolated Claude CLI generation and comparison, diagnostic Codex generation, and deterministic offline test providers.
 - Bounded spend accounting, blinded AB/BA comparison, canonical output contracts, and single-attempt holdout plans.
 
@@ -94,7 +94,7 @@ Skivolve accepts suite schema v1. The checked-in [suite.json](suite.json) is the
 
 Every case declares one of three canonical artifacts: `workspace_diff`, `final_output_text`, or `final_output_json`. Judged text or JSON requires a comparator profile calibrated for that artifact kind; the bundled production profile currently supports workspace diffs only. See the [getting-started guide](https://dhi13man.github.io/skivolve/docs/) for suite setup and [CONTRIBUTING.md](CONTRIBUTING.md) for case acceptance rules.
 
-Verifiers receive canonical output through read-only `EVAL_ARTIFACT_PATH`, with `EVAL_ARTIFACT_KIND` and `EVAL_ARTIFACT_SHA256`; `EVAL_SHARED_ROOT` exists only when `shared_verifier_dir` is configured. Final-output verification uses a pristine fixture workspace, so candidate files cannot replace the declared output.
+Verifiers receive canonical output through read-only `EVAL_ARTIFACT_PATH`, with `EVAL_ARTIFACT_KIND` and `EVAL_ARTIFACT_SHA256`; `EVAL_SHARED_ROOT` exists only when `shared_verifier_dir` is configured. Final-output verification uses a pristine fixture workspace, so candidate files cannot replace the declared output, while `EVAL_AGENT_WORKSPACE_MUTATED` reports generation-time writes even when the final bytes are restored.
 
 The reviewed adapter IDs are `claude-cli`, `codex-app-server`, and `deterministic-fake`. Adapter names and provider output cannot grant authority beyond the code-owned capability registry.
 

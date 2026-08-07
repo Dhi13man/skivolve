@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Agent Skill Evaluation Corpus | Skivolve</title>
-    <meta name="description" content="Explore Skivolve's 17 calibrated engineering and testing cases, including objective verifier design, adversarial variants, and train-validation splits.">
+    <meta name="description" content="Explore Skivolve's 21 calibrated engineering and testing cases, including objective verifier design, adversarial variants, and train-validation splits.">
     <meta name="robots" content="index, follow, max-image-preview:large">
     <meta name="theme-color" content="#07111f">
     <link rel="canonical" href="https://dhi13man.github.io/skivolve/corpus/">
@@ -13,7 +13,7 @@
     <meta property="og:type" content="article">
     <meta property="og:site_name" content="Skivolve">
     <meta property="og:title" content="Skivolve Agent Skill Evaluation Corpus">
-    <meta property="og:description" content="Seventeen calibrated cases for engineering and testing skill evaluation.">
+    <meta property="og:description" content="Twenty-one calibrated cases for engineering and testing skill evaluation.">
     <meta property="og:url" content="https://dhi13man.github.io/skivolve/corpus/">
     <meta property="og:image" content="https://dhi13man.github.io/skivolve/assets/og-image.png">
     <meta property="og:image:alt" content="Skivolve: Evolve agent skills with evidence">
@@ -27,7 +27,7 @@
         "@context": "https://schema.org",
         "@type": "CollectionPage",
         "name": "Skivolve Agent Skill Evaluation Corpus",
-        "description": "A reference corpus of 17 calibrated engineering and testing cases.",
+        "description": "A reference corpus of 21 calibrated engineering and testing cases.",
         "url": "https://dhi13man.github.io/skivolve/corpus/",
         "isPartOf": { "@id": "https://dhi13man.github.io/skivolve/#website" }
       }
@@ -51,7 +51,7 @@
 
     <main id="main-content" tabindex="-1">
       <header class="page-hero shell">
-        <p class="eyebrow">Reference corpus · 17 calibrated cases</p>
+        <p class="eyebrow">Reference corpus · 21 calibrated cases</p>
         <h1>Cases designed to expose weak evidence.</h1>
         <p class="lede">Every case carries observable requirements, an objective verifier, explicit resource bounds, and known-good, known-bad, and adversarial variants. The corpus demonstrates the contract; it does not define Skivolve’s domain ceiling.</p>
       </header>
@@ -59,14 +59,14 @@
       <section class="section shell" aria-labelledby="composition-title">
         <div class="section-heading">
           <p class="eyebrow">Composition</p>
-          <h2 id="composition-title">Ten train cases. Seven validation cases. Two disciplines.</h2>
-          <p class="lede">The split is fixed in the suite manifest. Engineering contributes five train and five validation cases; testing contributes five train and two validation cases.</p>
+          <h2 id="composition-title">Ten train cases. Eleven validation cases. Two disciplines.</h2>
+          <p class="lede">The split is fixed in the suite manifest. Engineering contributes five train and nine validation cases; testing contributes five train and two validation cases.</p>
         </div>
         <div class="proof-rail" aria-label="Corpus counts">
-          <div class="proof"><strong>10</strong><span>engineering cases</span></div>
+          <div class="proof"><strong>14</strong><span>engineering cases</span></div>
           <div class="proof"><strong>7</strong><span>testing cases</span></div>
           <div class="proof"><strong>10</strong><span>train cases</span></div>
-          <div class="proof"><strong>7</strong><span>validation cases</span></div>
+          <div class="proof"><strong>11</strong><span>validation cases</span></div>
         </div>
       </section>
 
@@ -83,6 +83,10 @@
           <article class="card"><p class="label">Validation</p><h3>Behavioral subtyping</h3><p>Substitution contracts rather than inheritance-shaped code reuse.</p></article>
           <article class="card"><p class="label">Validation</p><h3>Knowledge boundary</h3><p>Authority, locality, and duplication decisions under change pressure.</p></article>
           <article class="card"><p class="label">Validation</p><h3>Domain simplicity</h3><p>Direct design and earned complexity for domain behavior.</p></article>
+          <article class="card"><p class="label">Validation</p><h3>Compatibility decision</h3><p>Public-contract conflicts, migration ownership, and safe ask-before-change restraint.</p></article>
+          <article class="card"><p class="label">Validation</p><h3>Root-cause diagnosis</h3><p>Concrete causal evidence, reproducible checks, and honest remaining gaps.</p></article>
+          <article class="card"><p class="label">Validation</p><h3>Surgical plan</h3><p>Proportional implementation scope, precise boundaries, and native verification.</p></article>
+          <article class="card"><p class="label">Validation</p><h3>Evidence gap</h3><p>Source-bounded decisions, material counter-evidence, and resolving next checks.</p></article>
         </div>
       </section>
 

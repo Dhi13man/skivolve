@@ -18,75 +18,73 @@ from final_output import (  # noqa: E402
 
 EXPECTED_KEYS = {"decision", "supported_facts", "unknowns", "next_check"}
 ALLOWED_SOURCES = {"decision_rule.txt", "pilot_primary.txt", "pilot_counter.txt"}
-SOURCE_CLAIM_PATTERNS = {
-    "decision_rule.txt": (
-        r"adoption requires (?:evidence (?:for|on) the exact release candidate under "
-        r"(?:the|a) production-shaped workload, including p99 latency|exact-candidate "
-        r"production-shaped p99 evidence); median-only evidence is insufficient",
-    ),
-    "pilot_primary.txt": (
-        r"(?:quartz prototype )?q-17 reduced median latency by 18% on a 50-request "
-        r"(?:synthetic )?sample(?:(?:, but|\.) tail latency was not measured"
-        r"(?: for q-17)?)?",
-        r"tail latency was not measured for q-17",
-    ),
-    "pilot_counter.txt": (
-        r"an earlier (?:quartz )?build increased p99(?: latency)? by 9%"
-        r"(?: on a bursty workload)?(?:(?:;|,) (?:but )?(?:the (?:note|source) does "
-        r"not establish (?:whether|that) (?:(?:that|this) (?:earlier )?build|it) "
-        r"matches (?:release candidate )?q-17|(?:and )?its identity relative to q-17 "
-        r"is unknown))?",
-        r"the evidence does not establish whether that earlier build matches q-17",
-    ),
-}
-UNKNOWN_CLAIM_PATTERNS = (
-    r"(?:it is unknown )?whether (?:prototype )?q-17 (?:is|matches) the exact "
-    r"release candidate(?: is unknown)?",
-    r"(?:q-17(?:'s)?|the release candidate's) p99(?: latency)? under "
-    r"(?:the |a )?(?:required )?production-shaped workload(?: is unknown)?",
-    r"whether the earlier build's (?:9% )?p99 (?:regression|increase) applies to "
-    r"(?:q-17(?: or the release candidate)?|the release candidate)",
-    r"whether the earlier build matches q-17",
-    r"no acceptable p99 threshold or required improvement relative to the current "
-    r"engine is specified",
-    r"the acceptable p99 result or comparison threshold is unspecified",
-    r"the pass threshold or required comparison against the current engine",
-    r"no p99 acceptance threshold beyond requiring its measurement is supplied",
-)
 DECISION_PATTERN = (
     r"(?:do_not_replace_yet|do not replace the current engine yet(?:; the adoption "
     r"requirement is (?:not met|unmet))?)"
 )
-NEXT_CHECK_PATTERNS = (
-    r"run the exact release candidate under the production-shaped workload and measure "
-    r"p99 latency\. whether the exact-candidate production-shaped p99 evidence meets "
-    r"the required threshold",
-    r"run the exact release candidate, confirming q-17 identity, on the "
-    r"production-shaped workload and measure p99 against the current engine",
-    r"run the exact release candidate under production-shaped load and measure p99",
-    r"identify the exact release candidate, then run it on the production-shaped "
-    r"workload and measure p99 against the current engine",
-    r"identify the exact release candidate, then run it under the production-shaped "
-    r"workload and measure p99 latency",
-    r"identify the exact release candidate, then run it under the production-shaped "
-    r"workload and measure p99 latency\. whether the required release-candidate, "
-    r"production-shaped, tail-latency evidence exists; the supplied evidence still "
-    r"lacks an acceptance threshold for interpreting the measured p99",
-    r"run the exact q-17 release candidate and the current engine on the same "
-    r"production-shaped workload, measuring p99 latency\. whether the required "
-    r"release-candidate, production-shaped, p99 evidence exists; the supplied rule "
-    r"does not define the qualifying p99 result",
-    r"confirm the exact release candidate, then measure its p99 latency under the "
-    r"production-shaped workload\. the missing candidate identity and p99 evidence "
-    r"required by the adoption rule",
-    r"run the exact release candidate, confirming whether it is q-17, under the "
-    r"production-shaped workload and record p99 latency",
-    r"verify the exact release-candidate identity, then measure its p99 latency under "
-    r"the production-shaped workload and compare it with the current engine\. the "
-    r"missing evidence required by the adoption rule",
-    r"identify the exact release candidate, then compare it with the current engine on "
-    r"the same production-shaped workload while measuring p99 latency",
-)
+
+
+def grounded_fact(source: str, claim: str) -> bool:
+    if source == "decision_rule.txt":
+        return bool(
+            re.search(r"\badoption\b", claim)
+            and re.search(r"\brequires?\b", claim)
+            and re.search(r"\bexact(?:-| )candidate|exact release candidate\b", claim)
+            and "production-shaped" in claim
+            and "p99" in claim
+            and "median" in claim
+            and "insufficient" in claim
+            and "without production-shaped p99" not in claim
+        )
+    if source == "pilot_primary.txt":
+        unsupported = re.search(
+            r"\b(?:increased median|proves?|safe for|every production|memory)\b", claim
+        )
+        median_result = all(
+            token in claim
+            for token in ("q-17", "reduced", "median", "18%", "50-request")
+        )
+        tail_gap = (
+            "q-17" in claim
+            and "tail latency" in claim
+            and re.search(r"\bnot measured\b", claim)
+        )
+        return unsupported is None and bool(median_result or tail_gap)
+    if source == "pilot_counter.txt":
+        regression = all(
+            token in claim for token in ("earlier", "build", "increased", "p99", "9%")
+        )
+        identity_gap = bool(
+            "earlier build" in claim
+            and "q-17" in claim
+            and re.search(r"\b(?:unknown|does not establish|not establish)\b", claim)
+        )
+        return regression or identity_gap
+    return False
+
+
+def material_unknown(claim: str) -> bool:
+    if re.search(
+        r"\b(?:known|benchmarked|available|identical|definitely|should replace|meets)\b|"
+        r"\bidentity matches\b",
+        claim,
+    ):
+        return False
+    candidate_identity = (
+        "q-17" in claim
+        and "release candidate" in claim
+        and re.search(r"\b(?:whether|identity|matches|exact)\b", claim)
+    )
+    production_p99 = "p99" in claim and "production-shaped" in claim
+    earlier_applicability = (
+        "earlier build" in claim
+        and re.search(r"\b(?:q-17|release candidate)\b", claim)
+        and re.search(r"\b(?:applies|matches|identity)\b", claim)
+    )
+    threshold_gap = "threshold" in claim or "required comparison" in claim
+    return bool(
+        candidate_identity or production_p99 or earlier_applicability or threshold_gap
+    )
 
 
 def main() -> None:
@@ -134,10 +132,7 @@ def main() -> None:
         claim
         and isinstance(source, str)
         and source in ALLOWED_SOURCES
-        and any(
-            re.fullmatch(pattern, claim.rstrip(". "))
-            for pattern in SOURCE_CLAIM_PATTERNS[source]
-        )
+        and grounded_fact(source, claim.rstrip(". "))
         for source, claim in fact_claims
     )
     balanced_facts = (
@@ -174,14 +169,10 @@ def main() -> None:
                 )
             )
             and isinstance(item.get("claim", item.get("unknown")), str)
-            and any(
-                re.fullmatch(
-                    pattern,
-                    flatten_text(item.get("claim", item.get("unknown", "")))
-                    .lower()
-                    .rstrip(". "),
-                )
-                for pattern in UNKNOWN_CLAIM_PATTERNS
+            and material_unknown(
+                flatten_text(item.get("claim", item.get("unknown", "")))
+                .lower()
+                .rstrip(". ")
             )
             for item in unknowns
         )
@@ -190,9 +181,17 @@ def main() -> None:
         and any(token in unknowns_text for token in ("q-17", "release candidate"))
         and any(word in unknowns_text for word in ("whether", "identity", "matches"))
     )
-    resolving_check = any(
-        re.fullmatch(pattern, next_check.rstrip(". "))
-        for pattern in NEXT_CHECK_PATTERNS
+    resolving_check = bool(
+        re.search(
+            r"\b(?:run|identify|confirm|verify|measure|record|compare)\b", next_check
+        )
+        and re.search(
+            r"\b(?:exact(?:-| )release(?:-| )candidate|exact(?:-| )candidate|q-17)\b",
+            next_check,
+        )
+        and "production-shaped" in next_check
+        and re.search(r"\b(?:p99|tail latency)\b", next_check)
+        and not re.search(r"\b(?:do not|refuse|median-only)\b", next_check)
     )
     restrained = (
         artifact is not None

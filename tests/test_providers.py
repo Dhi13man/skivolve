@@ -714,6 +714,7 @@ print(json.dumps({
         self.assertEqual(run.call_args_list[0].kwargs["timeout_seconds"], 12)
         inner = command[command.index("--") + 1 :]
         self.assertIn("CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1", inner)
+        self.assertIn("PYTHONDONTWRITEBYTECODE=1", inner)
 
     def test_comparator_delegates_canonical_bytes_to_shared_runtime(self) -> None:
         provider = ClaudeCliProvider(self.config())

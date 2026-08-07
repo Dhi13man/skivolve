@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import concurrent.futures
+import ctypes
 import datetime as dt
 import difflib
 import fcntl
@@ -14,6 +15,7 @@ import re
 import select
 import shutil
 import stat
+import struct
 import subprocess
 import tempfile
 import threading
@@ -131,6 +133,110 @@ class RunnerError(RuntimeError):
 
 class _GeneratorDispatchJournalError(RunnerError):
     """Raised when generator dispatch accounting cannot remain trustworthy."""
+
+
+class _WorkspaceMutationMonitor:
+    """Observe successful write operations even when final bytes are restored."""
+
+    _MASK = 0x00000002 | 0x00000004 | 0x00000008 | 0x00000040 | 0x00000080
+    _MASK |= 0x00000100 | 0x00000200 | 0x00000400 | 0x00000800
+    _EVENT = struct.Struct("=iIII")
+    _PROVIDER_RUNTIME_ENTRIES = frozenset(
+        {".skill-eval-cache", ".skill-eval-home", ".skill-eval-tmp"}
+    )
+
+    def __init__(self, root: Path) -> None:
+        libc = ctypes.CDLL(None, use_errno=True)
+        initialize = libc.inotify_init1
+        initialize.argtypes = (ctypes.c_int,)
+        initialize.restype = ctypes.c_int
+        add_watch = libc.inotify_add_watch
+        add_watch.argtypes = (ctypes.c_int, ctypes.c_char_p, ctypes.c_uint32)
+        add_watch.restype = ctypes.c_int
+        descriptor = initialize(os.O_CLOEXEC | os.O_NONBLOCK)
+        if descriptor < 0:
+            error = ctypes.get_errno()
+            raise RunnerError(
+                f"cannot monitor agent workspace writes: {os.strerror(error)}"
+            )
+        self._descriptor = descriptor
+        self._watched_directories: dict[int, Path] = {}
+        try:
+            for current, directories, _files in os.walk(root, followlinks=False):
+                current_path = Path(current)
+                watch_descriptor = add_watch(
+                    descriptor,
+                    ctypes.c_char_p(os.fsencode(current_path)),
+                    self._MASK,
+                )
+                if watch_descriptor < 0:
+                    error = ctypes.get_errno()
+                    raise RunnerError(
+                        "cannot monitor agent workspace directory "
+                        f"{current_path}: {os.strerror(error)}"
+                    )
+                self._watched_directories[watch_descriptor] = current_path.relative_to(
+                    root
+                )
+                for name in directories:
+                    path = current_path / name
+                    if path.is_symlink() or not path.is_dir():
+                        raise RunnerError(
+                            f"agent workspace contains unsafe directory: {path}"
+                        )
+        except BaseException:
+            self.close()
+            raise
+
+    def discard_pending(self) -> None:
+        self._drain()
+
+    def observed(self) -> bool:
+        return self._drain()
+
+    def _drain(self) -> bool:
+        observed = False
+        while True:
+            try:
+                chunk = os.read(self._descriptor, 64 * 1024)
+            except BlockingIOError:
+                return observed
+            except InterruptedError:
+                continue
+            except OSError as exc:
+                raise RunnerError(
+                    f"cannot read agent workspace mutation evidence: {exc}"
+                ) from exc
+            if not chunk:
+                raise RunnerError(
+                    "agent workspace mutation monitor closed unexpectedly"
+                )
+            offset = 0
+            while offset < len(chunk):
+                if len(chunk) - offset < self._EVENT.size:
+                    raise RunnerError("agent workspace mutation event was truncated")
+                watch, _mask, _cookie, name_bytes = self._EVENT.unpack_from(
+                    chunk, offset
+                )
+                offset += self._EVENT.size
+                end = offset + name_bytes
+                if end > len(chunk):
+                    raise RunnerError("agent workspace mutation name was truncated")
+                name = os.fsdecode(chunk[offset:end].split(b"\0", 1)[0])
+                offset = end
+                relative = self._watched_directories.get(watch)
+                provider_runtime_event = (
+                    relative is not None
+                    and not relative.parts
+                    and name in self._PROVIDER_RUNTIME_ENTRIES
+                )
+                if not provider_runtime_event:
+                    observed = True
+
+    def close(self) -> None:
+        if self._descriptor >= 0:
+            os.close(self._descriptor)
+            self._descriptor = -1
 
 
 _GENERATOR_DISPATCH_JOURNAL = "generator-dispatch.jsonl"
@@ -1817,7 +1923,11 @@ class EvalRunner:
             selection, allow_unsealed_holdout=allow_unsealed_holdout
         )
         self._assert_injected_fake_generator_admissible(selection, cases)
-        if runtime is None and self.suite.evaluation_mode != "objective_only":
+        if (
+            runtime is None
+            and self.suite.evaluation_mode != "objective_only"
+            and not selection.verifier_only
+        ):
             runtime = self._load_comparator_runtime()
         generator_artifact_kinds = set(
             capabilities_for(
@@ -1836,7 +1946,7 @@ class EvalRunner:
                 "generator adapter does not support selected artifact kinds: "
                 + ", ".join(unsupported_generator_artifacts)
             )
-        if runtime is not None:
+        if runtime is not None and not selection.verifier_only:
             unsupported_profile_artifacts = sorted(
                 {
                     case.artifact_contract.kind
@@ -2090,7 +2200,7 @@ class EvalRunner:
             )
             return dry_run_result
         runtime: ComparatorRuntime | None = None
-        if self.suite.evaluation_mode == "judged":
+        if self.suite.evaluation_mode == "judged" and not selection.verifier_only:
             runtime = self._load_comparator_runtime()
         if runtime is not None and not selection.verifier_only:
             assert self.suite.comparator is not None
@@ -3444,6 +3554,8 @@ class EvalRunner:
         provider_journal_state: str | None = None
         provider_entered = False
         synchronization_complete = False
+        workspace_mutation_observed = False
+        workspace_mutation_monitor: _WorkspaceMutationMonitor | None = None
         normalized_artifact: NormalizedArtifact | None = None
         stage = "fixture_copy"
         try:
@@ -3458,7 +3570,7 @@ class EvalRunner:
             hashes["context_sha256"] = source.context_hash
             system_context = _system_context(case, source)
 
-            def account_dispatch() -> None:
+            def account_dispatch(*, provider_callback: bool = True) -> None:
                 if provider_attempt_id is None:
                     raise _GeneratorDispatchJournalError(
                         "generator dispatch callback preceded durable planning"
@@ -3468,6 +3580,8 @@ class EvalRunner:
                     raise _GeneratorDispatchJournalError(
                         "generator dispatch ledger was not initialized"
                     )
+                if provider_callback and workspace_mutation_monitor is not None:
+                    workspace_mutation_monitor.discard_pending()
                 ledger.mark_dispatched(provider_attempt_id)
                 provider_dispatched.set()
 
@@ -3519,11 +3633,13 @@ class EvalRunner:
                 provider_window["started"] = time.monotonic()
             synchronization_complete = True
             stage = "agent"
+            if case.artifact_contract.kind != "workspace_diff":
+                workspace_mutation_monitor = _WorkspaceMutationMonitor(workspace)
             try:
                 provider_entered = True
                 provider_result = self.agent_provider.run_agent(request)
                 if not provider_dispatched.is_set():
-                    account_dispatch()
+                    account_dispatch(provider_callback=False)
                 provider_journal_state = "dispatched"
                 if case.artifact_contract.kind != "workspace_diff":
                     stage = "artifact_normalization"
@@ -3548,6 +3664,13 @@ class EvalRunner:
                 provider_journal_state = "completed"
             finally:
                 provider_window["finished"] = time.monotonic()
+                if workspace_mutation_monitor is not None:
+                    try:
+                        workspace_mutation_observed = (
+                            workspace_mutation_monitor.observed()
+                        )
+                    finally:
+                        workspace_mutation_monitor.close()
                 if source is not None and source.snapshot is not None:
                     _make_tree_writable(source.snapshot)
             hashes["agent_output_sha256"] = _sha256(
@@ -3563,6 +3686,7 @@ class EvalRunner:
             agent_workspace_mutated = (
                 before != after_agent_mutation
                 or before_permissions != after_agent_permissions
+                or workspace_mutation_observed
             )
             hashes["workspace_after_agent_sha256"] = _states_hash(after_agent)
             diff_text = _diff_states(before, after_agent)

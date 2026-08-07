@@ -4,6 +4,8 @@ All notable changes to Skivolve are documented in this file. The format follows 
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-08-07
+
 ### Added
 
 - Added four calibrated final-output cases for compatibility decisions, read-only diagnoses, surgical plans, and evidence-gap research, with transient workspace-write evidence and unseen positive paraphrases guarding against oracle overfitting.
@@ -129,7 +131,8 @@ All notable changes to Skivolve are documented in this file. The format follows 
 - Repository-local `engineering` and `testing` reference bundles for exercising Git-bound comparison variants.
 - CI, CodeQL, OpenSSF Scorecard, Dependabot, issue forms, contribution policy, security reporting, governance, support, and release documentation.
 
-[Unreleased]: https://github.com/Dhi13man/skivolve/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/Dhi13man/skivolve/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/Dhi13man/skivolve/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/Dhi13man/skivolve/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/Dhi13man/skivolve/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/Dhi13man/skivolve/compare/v0.2.0...v0.3.0

@@ -1,6 +1,6 @@
 {
-  "codex_cli_version": "codex-cli 0.144.3",
-  "executable_sha256": "37e6f5953f191b04f7b62cb07dae90f51d0947ad89f0355665b421fbde28700b",
+  "codex_cli_version": "codex-cli 0.146.0",
+  "executable_sha256": "2e863156ed35ecc5253b1e2f907a9143077b9f7cb51942070c61996471ff6e04",
   "models": {
     "gpt-5.6-luna": {
       "reasoning_efforts": [
@@ -24,7 +24,7 @@
   },
   "protocol": {
     "bundle": "codex_app_server_protocol.v2.schemas.json",
-    "canonical_bytes": 308970,
+    "canonical_bytes": 331046,
     "canonicalization": "json-sort-keys-compact-ascii-v1",
     "generate_argv": [
       "app-server",
@@ -33,17 +33,17 @@
       "--out",
       "{output_dir}"
     ],
-    "sha256": "f5e8d20f3a8f9bb5e5b23ab0c5aa6bde7b12e7e0713606c5d0132651a4959d37"
+    "sha256": "e554a74bd59d38d16acb1744750b2999156ee3d65d0fe906b22ab52edf17fbbc"
   },
   "runtime_bundle": {
     "canonicalization": "json-sort-keys-compact-ascii-v1",
     "files": {
-      "bin/codex": "37e6f5953f191b04f7b62cb07dae90f51d0947ad89f0355665b421fbde28700b",
-      "codex-path/rg": "ebeaf56f8a25e102e9419933423738b3a2a613a444fd749d695e15eba53f71f2",
+      "bin/codex": "2e863156ed35ecc5253b1e2f907a9143077b9f7cb51942070c61996471ff6e04",
+      "codex-path/rg": "e62198eb19b136b88c330af83647b5a962cb99b6b1f066758568f12de1974849",
       "codex-resources/bwrap": "77360cb751ccedc5971391444ac86a8a33c15b04d6b4a6fe45f5d25496e62c4c",
       "codex-resources/zsh/bin/zsh": "67faaaa89242c4a332e16e508a1977cffc24bf7fca31d4411cdfd101f3831ef3"
     },
-    "sha256": "dd0959589aaf01d8e9f18147255d885ca8eb9e5b4373575225da98698498bcdf"
+    "sha256": "134da631c1d438ae8c28fe3ac24aabf9bc38828a1892038cb650ab0102b4188c"
   },
   "schema_version": 1
 }

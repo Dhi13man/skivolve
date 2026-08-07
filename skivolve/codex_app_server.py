@@ -34,6 +34,16 @@ from .providers import (
 )
 
 
+class ProviderTimeoutError(ProviderError):
+    """Raised when a Codex operation exceeds its configured deadline."""
+
+    def __init__(self, message: str, *, cleanup_confirmed: bool = False) -> None:
+        if type(cleanup_confirmed) is not bool:
+            raise TypeError("cleanup_confirmed must be a bool")
+        super().__init__(message)
+        self.cleanup_confirmed = cleanup_confirmed
+
+
 _MAX_FRAME_BYTES = 8 * 1024 * 1024
 _MAX_MESSAGES = 20_000
 _MAX_PAGES = 64
@@ -41,6 +51,8 @@ _MAX_PAGE_ITEMS = 4_096
 _MAX_MODELS = 4_096
 _MAX_SKILLS = 1_024
 _MAX_COMPLETED_MESSAGES = 64
+_MAX_COLLAB_THREADS = 32
+_MAX_COLLAB_TURNS = 128
 _MAX_RETAINED_TEXT_BYTES = 8 * 1024 * 1024
 _MAX_RATE_LIMIT_BUCKETS = 32
 _MAX_AUTH_BYTES = 1024 * 1024
@@ -122,6 +134,7 @@ _PROHIBITED_NOTIFICATIONS = frozenset(
 _ALLOWED_ITEM_TYPES = frozenset(
     {
         "agentMessage",
+        "collabAgentToolCall",
         "commandExecution",
         "contextCompaction",
         "fileChange",
@@ -183,6 +196,12 @@ class _PoisonBinding:
 
     def as_json(self) -> dict[str, int | str]:
         return asdict(self)
+
+
+@dataclass(frozen=True)
+class _WorkspaceRuntime:
+    parent_descriptor: int
+    directories: tuple[tuple[str, int], ...]
 
 
 class _RecoveryProbe(Protocol):
@@ -474,7 +493,7 @@ def _require_exact_keys(
 def _remaining(deadline: float, label: str) -> float:
     remaining = deadline - time.monotonic()
     if remaining <= 0:
-        raise ProviderError(f"{label} timed out")
+        raise ProviderTimeoutError(f"{label} timed out")
     return remaining
 
 
@@ -1228,11 +1247,36 @@ class _AppServerProtocol:
         self._expected_codex_home = expected_codex_home
         self._on_dispatched = on_dispatched
         self._thread_id: str | None = None
+        self._session_id: str | None = None
         self._announced_thread_id: str | None = None
         self._turn_id: str | None = None
         self._announced_turn_id: str | None = None
         self._turn_completed: dict[str, Any] | None = None
         self._completed_messages: list[dict[str, str | None]] = []
+        self._collab_thread_ids: set[str] = set()
+        self._validated_collab_thread_ids: set[str] = set()
+        self._collab_parent_ids: dict[str, str] = {}
+        self._collab_depths: dict[str, int] = {}
+        self._collab_turn_ids: dict[str, set[str]] = {}
+        self._active_collab_thread_ids: set[str] = set()
+        self._seen_collab_turn_ids: set[tuple[str, str]] = set()
+        self._collab_turn_usage: dict[tuple[str, str], dict[str, int]] = {}
+        self._collab_turn_statuses = {
+            "completed": 0,
+            "failed": 0,
+            "interrupted": 0,
+        }
+        self._pending_spawn_items: dict[
+            tuple[str, str], tuple[str | None, bytes | None]
+        ] = {}
+        self._terminal_collab_history: dict[tuple[str, str], bytes] = {}
+        self._terminal_collab_item_ids: set[tuple[str, str]] = set()
+        self._completed_spawn_edges: set[tuple[str, str]] = set()
+        self._active_nonspawn_items: dict[
+            tuple[str, str], tuple[str, tuple[str, ...], bytes | None]
+        ] = {}
+        self._unbound_collab_thread_ids: set[str] = set()
+        self._failed_collab_thread_ids: set[str] = set()
         self._retained_text_bytes = 0
         self._last_usage: dict[str, int] | None = None
         self._rate_limits: dict[str, Any] | None = None
@@ -1254,6 +1298,12 @@ class _AppServerProtocol:
         after_limits = self._read_rate_limits(deadline)
         if self._last_usage is None:
             raise ProviderError("Codex turn omitted last-turn token usage")
+        total_usage = dict(self._last_usage)
+        child_usage = {key: 0 for key in self._last_usage}
+        for usage in self._collab_turn_usage.values():
+            for key, value in usage.items():
+                total_usage[key] += value
+                child_usage[key] += value
         quota = {
             "before": before_limits,
             "rolling": self._rate_limits,
@@ -1262,16 +1312,22 @@ class _AppServerProtocol:
         assert self._thread_id is not None and self._turn_id is not None
         raw = {
             "account": account,
+            "collaboration": {
+                "child_thread_count": len(self._validated_collab_thread_ids),
+                "child_turn_count": len(self._seen_collab_turn_ids),
+                "child_turn_statuses": dict(self._collab_turn_statuses),
+                "usage": child_usage,
+            },
             "model": self._model,
             "reasoning_effort": self._reasoning_effort,
             "thread_id_sha256": _opaque_sha256(self._thread_id),
             "turn": turn,
             "turn_id_sha256": _opaque_sha256(self._turn_id),
-            "usage": dict(self._last_usage),
+            "usage": dict(total_usage),
         }
         return _TurnOutcome(
             final_output=final_output,
-            tokens=dict(self._last_usage),
+            tokens=total_usage,
             quota=quota,
             raw_response=raw,
         )
@@ -1560,7 +1616,7 @@ class _AppServerProtocol:
         )
         if created_at is None or updated_at is None or updated_at < created_at:
             raise ProviderError("Codex thread timestamps are missing or inconsistent")
-        _require_protocol_id(thread.get("sessionId"), "thread.sessionId")
+        session_id = _require_protocol_id(thread.get("sessionId"), "thread.sessionId")
         status = _require_object(thread.get("status"), "thread.status")
         _require_exact_keys(status, "thread.status", required={"type"})
         if status != {"type": "idle"} or thread.get("preview") != "":
@@ -1594,6 +1650,7 @@ class _AppServerProtocol:
         thread_id = _require_protocol_id(thread.get("id"), "thread.id")
         if self._announced_thread_id not in {None, thread_id}:
             raise ProviderError("Codex thread announcement disagrees with thread/start")
+        self._session_id = session_id
         self._thread_id = thread_id
 
     def _start_turn(self, prompt: str, deadline: float) -> None:
@@ -1626,10 +1683,107 @@ class _AppServerProtocol:
 
     def _handle_notification(self, method: str, raw_params: Any) -> None:
         params = _require_object(raw_params, "notification params")
+        if self._turn_completed is not None and (
+            method.startswith(("item/", "model/", "turn/"))
+            or method
+            in {
+                "error",
+                "thread/started",
+                "thread/status/changed",
+                "thread/tokenUsage/updated",
+            }
+        ):
+            raise ProviderError("Codex emitted turn traffic after root completion")
         if method == "model/rerouted":
             raise ProviderError("Codex rerouted the pinned model")
         if method == "error":
-            _require_object(params.get("error"), "error notification")
+            _require_exact_keys(
+                params,
+                "error notification",
+                required={"error", "threadId", "turnId", "willRetry"},
+            )
+            error = _require_object(params.get("error"), "error notification.error")
+            _require_exact_keys(
+                error,
+                "error notification.error",
+                required={"message"},
+                optional={"additionalDetails", "codexErrorInfo"},
+            )
+            _require_string(error.get("message"), "error notification.error.message")
+            additional_details = error.get("additionalDetails")
+            if additional_details is not None and not isinstance(
+                additional_details, str
+            ):
+                raise ProviderError(
+                    "error notification additionalDetails must be a string or null"
+                )
+            error_info = error.get("codexErrorInfo")
+            if isinstance(error_info, str):
+                if error_info not in {
+                    "badRequest",
+                    "contextWindowExceeded",
+                    "cyberPolicy",
+                    "internalServerError",
+                    "other",
+                    "sandboxError",
+                    "serverOverloaded",
+                    "sessionBudgetExceeded",
+                    "threadRollbackFailed",
+                    "unauthorized",
+                    "usageLimitExceeded",
+                }:
+                    raise ProviderError(
+                        "error notification has unknown Codex error info"
+                    )
+            elif error_info is not None:
+                info = _require_object(error_info, "error notification.codexErrorInfo")
+                if len(info) != 1:
+                    raise ProviderError(
+                        "error notification has invalid Codex error info"
+                    )
+                variant, raw_info = next(iter(info.items()))
+                variant_info = _require_object(
+                    raw_info, f"error notification.codexErrorInfo.{variant}"
+                )
+                if variant in {
+                    "httpConnectionFailed",
+                    "responseStreamConnectionFailed",
+                    "responseStreamDisconnected",
+                    "responseTooManyFailedAttempts",
+                }:
+                    _require_exact_keys(
+                        variant_info,
+                        f"error notification.codexErrorInfo.{variant}",
+                        required=set(),
+                        optional={"httpStatusCode"},
+                    )
+                    _optional_bounded_integer(
+                        variant_info.get("httpStatusCode"),
+                        "error notification HTTP status",
+                        maximum=65535,
+                    )
+                elif variant == "activeTurnNotSteerable":
+                    _require_exact_keys(
+                        variant_info,
+                        "error notification active-turn error info",
+                        required={"turnKind"},
+                    )
+                    if variant_info.get("turnKind") not in {"review", "compact"}:
+                        raise ProviderError(
+                            "error notification has unknown active turn kind"
+                        )
+                else:
+                    raise ProviderError(
+                        "error notification has unknown Codex error info"
+                    )
+            main_turn = self._matches_turn(params)
+            if not main_turn and not self._matches_collab_turn(params):
+                raise ProviderError("Codex error notification changed turn scope")
+            will_retry = params.get("willRetry")
+            if type(will_retry) is not bool:
+                raise ProviderError("Codex error notification has invalid retry state")
+            if will_retry or not main_turn:
+                return
             raise ProviderError("Codex reported a turn error")
         if method == "account/rateLimits/updated":
             update = _sanitize_rate_snapshot(
@@ -1676,6 +1830,187 @@ class _AppServerProtocol:
             announced = _require_protocol_id(
                 thread.get("id"), "thread/started.thread.id"
             )
+            if self._thread_id is not None and announced != self._thread_id:
+                _require_exact_keys(
+                    thread,
+                    "child thread",
+                    required={
+                        "cliVersion",
+                        "createdAt",
+                        "cwd",
+                        "ephemeral",
+                        "id",
+                        "modelProvider",
+                        "preview",
+                        "sessionId",
+                        "source",
+                        "status",
+                        "turns",
+                        "updatedAt",
+                    },
+                    optional={
+                        "agentNickname",
+                        "agentRole",
+                        "canAcceptDirectInput",
+                        "extra",
+                        "forkedFromId",
+                        "gitInfo",
+                        "historyMode",
+                        "isPinned",
+                        "name",
+                        "parentThreadId",
+                        "path",
+                        "recencyAt",
+                        "threadSource",
+                    },
+                )
+                for field in ("agentNickname", "agentRole", "name"):
+                    value = thread.get(field)
+                    if value is not None and not isinstance(value, str):
+                        raise ProviderError(
+                            f"child thread.{field} must be a string or null"
+                        )
+                direct_input = thread.get("canAcceptDirectInput")
+                if direct_input is not None and type(direct_input) is not bool:
+                    raise ProviderError(
+                        "child thread.canAcceptDirectInput must be a bool or null"
+                    )
+                if "isPinned" in thread and type(thread["isPinned"]) is not bool:
+                    raise ProviderError("child thread.isPinned must be a bool")
+                if thread.get("extra") is not None:
+                    _require_object(thread["extra"], "child thread.extra")
+                git_info = thread.get("gitInfo")
+                if git_info is not None:
+                    git_info = _require_object(git_info, "child thread.gitInfo")
+                    _require_exact_keys(
+                        git_info,
+                        "child thread.gitInfo",
+                        required=set(),
+                        optional={"branch", "originUrl", "sha"},
+                    )
+                    for field in ("branch", "originUrl", "sha"):
+                        value = git_info.get(field)
+                        if value is not None and not isinstance(value, str):
+                            raise ProviderError(
+                                f"child thread.gitInfo.{field} must be a string or null"
+                            )
+                _optional_bounded_integer(
+                    thread.get("recencyAt"), "child thread.recencyAt"
+                )
+                if announced in self._validated_collab_thread_ids:
+                    raise ProviderError("Codex announced a child thread more than once")
+                created_at = _optional_bounded_integer(
+                    thread.get("createdAt"), "child thread.createdAt"
+                )
+                updated_at = _optional_bounded_integer(
+                    thread.get("updatedAt"), "child thread.updatedAt"
+                )
+                session_id = _require_protocol_id(
+                    thread.get("sessionId"), "child thread.sessionId"
+                )
+                parent_id = _require_protocol_id(
+                    thread.get("parentThreadId"), "child thread.parentThreadId"
+                )
+                source = _require_object(thread.get("source"), "child thread.source")
+                _require_exact_keys(
+                    source, "child thread.source", required={"subAgent"}
+                )
+                subagent = _require_object(
+                    source.get("subAgent"), "child thread.source.subAgent"
+                )
+                _require_exact_keys(
+                    subagent,
+                    "child thread.source.subAgent",
+                    required={"thread_spawn"},
+                )
+                spawn = _require_object(
+                    subagent.get("thread_spawn"),
+                    "child thread.source.subAgent.thread_spawn",
+                )
+                _require_exact_keys(
+                    spawn,
+                    "child thread.source.subAgent.thread_spawn",
+                    required={"depth", "parent_thread_id"},
+                    optional={"agent_nickname", "agent_path", "agent_role"},
+                )
+                for field in ("agent_nickname", "agent_path", "agent_role"):
+                    value = spawn.get(field)
+                    if value is not None and not isinstance(value, str):
+                        raise ProviderError(
+                            f"child thread.source {field} must be a string or null"
+                        )
+                source_parent_id = _require_protocol_id(
+                    spawn.get("parent_thread_id"),
+                    "child thread.source parent thread id",
+                )
+                bound_parent_id = self._collab_parent_ids.get(announced)
+                parent_depth = (
+                    0
+                    if parent_id == self._thread_id
+                    else self._collab_depths.get(parent_id)
+                )
+                depth = _optional_bounded_integer(
+                    spawn.get("depth"),
+                    "child thread.source depth",
+                    minimum=1,
+                    maximum=_MAX_COLLAB_THREADS,
+                )
+                self._validate_thread_status(
+                    _require_object(thread.get("status"), "child thread.status"),
+                    "child thread.status",
+                )
+                preview = thread.get("preview")
+                if not isinstance(preview, str):
+                    raise ProviderError("child thread.preview must be a string")
+                if len(preview.encode("utf-8")) > _MAX_RETAINED_TEXT_BYTES:
+                    raise ProviderError("child thread.preview exceeds the byte limit")
+                if (
+                    created_at is None
+                    or updated_at is None
+                    or updated_at < created_at
+                    or depth is None
+                    or parent_depth is None
+                    or depth != parent_depth + 1
+                    or self._session_id is None
+                    or session_id != self._session_id
+                    or parent_id != source_parent_id
+                    or (bound_parent_id is not None and bound_parent_id != parent_id)
+                    or (
+                        parent_id != self._thread_id
+                        and parent_id not in self._validated_collab_thread_ids
+                    )
+                    or thread.get("modelProvider") != "openai"
+                    or thread.get("cliVersion") != self._locked_thread_cli_version
+                    or thread.get("cwd") != str(self._workspace)
+                    or thread.get("ephemeral") is not True
+                    or thread.get("historyMode") != "paginated"
+                    or thread.get("path") is not None
+                    or thread.get("forkedFromId") is not None
+                    or thread.get("threadSource") != "skill-eval"
+                    or thread.get("turns") != []
+                ):
+                    raise ProviderError(
+                        "Codex child thread provenance differs from the root request"
+                    )
+                if not (
+                    any(
+                        sender == parent_id and pending[0] in {None, announced}
+                        for (
+                            sender,
+                            _item_id,
+                        ), pending in self._pending_spawn_items.items()
+                    )
+                    or (parent_id, announced) in self._completed_spawn_edges
+                ):
+                    raise ProviderError(
+                        "Codex child thread lacked parent-owned spawn history"
+                    )
+                if not self._claim_collab_thread_scope(announced):
+                    raise ProviderError("Codex thread announcement changed scope")
+                self._validated_collab_thread_ids.add(announced)
+                self._collab_parent_ids[announced] = parent_id
+                self._collab_depths[announced] = depth
+                return
             if self._announced_thread_id is not None:
                 raise ProviderError("Codex announced more than one thread")
             self._announced_thread_id = announced
@@ -1684,26 +2019,69 @@ class _AppServerProtocol:
             thread_id = _require_protocol_id(
                 params.get("threadId"), "turn/started.threadId"
             )
-            if self._thread_id is None or thread_id != self._thread_id:
-                raise ProviderError("Codex turn announcement changed thread scope")
             turn = _require_object(params.get("turn"), "turn/started.turn")
             announced = _require_protocol_id(turn.get("id"), "turn/started.turn.id")
+            if self._thread_id is None:
+                raise ProviderError("Codex turn announcement changed thread scope")
+            if thread_id != self._thread_id:
+                if thread_id not in self._validated_collab_thread_ids:
+                    raise ProviderError(
+                        "Codex child turn preceded its provenance announcement"
+                    )
+                turns = self._collab_turn_ids.setdefault(thread_id, set())
+                turn_scope = (thread_id, announced)
+                if turn_scope in self._seen_collab_turn_ids:
+                    raise ProviderError("Codex announced a child turn more than once")
+                if len(self._seen_collab_turn_ids) >= _MAX_COLLAB_TURNS:
+                    raise ProviderError("collaboration turn count exceeds the limit")
+                turns.add(announced)
+                self._seen_collab_turn_ids.add(turn_scope)
+                return
             if self._announced_turn_id is not None:
                 raise ProviderError("Codex announced more than one turn")
             self._announced_turn_id = announced
             return
         if method == "thread/tokenUsage/updated":
-            if not self._matches_turn(params):
+            main_turn = self._matches_turn(params)
+            if not main_turn and not self._matches_collab_turn(params):
                 raise ProviderError("Codex token usage targeted an unknown turn")
             usage = _require_object(params.get("tokenUsage"), "tokenUsage")
             last = _require_object(usage.get("last"), "tokenUsage.last")
-            self._last_usage = self._validate_usage(last)
+            validated = self._validate_usage(last)
+            if main_turn:
+                self._last_usage = validated
+            else:
+                thread_id = _require_protocol_id(
+                    params.get("threadId"), "tokenUsage.threadId"
+                )
+                turn_id = _require_protocol_id(
+                    params.get("turnId"), "tokenUsage.turnId"
+                )
+                self._collab_turn_usage[(thread_id, turn_id)] = validated
             return
         if method == "item/completed":
-            if not self._matches_turn(params):
+            main_turn = self._matches_turn(params)
+            if not main_turn and not self._matches_collab_turn(params):
                 raise ProviderError("Codex item completion targeted an unknown turn")
+            if (
+                _optional_bounded_integer(
+                    params.get("completedAtMs"),
+                    "item/completed.completedAtMs",
+                    minimum=-(2**63),
+                )
+                is None
+            ):
+                raise ProviderError("item/completed.completedAtMs is required")
             item = _require_object(params.get("item"), "item/completed.item")
-            self._validate_item(item)
+            self._validate_item(
+                item,
+                owner_thread_id=_require_protocol_id(
+                    params.get("threadId"), "item/completed.threadId"
+                ),
+                lifecycle="completed",
+            )
+            if not main_turn:
+                return
             if item.get("type") == "agentMessage":
                 if len(self._completed_messages) >= _MAX_COMPLETED_MESSAGES:
                     raise ProviderError(
@@ -1723,29 +2101,71 @@ class _AppServerProtocol:
                 )
             return
         if method == "item/started":
-            if not self._matches_turn(params):
+            if not self._matches_turn(params) and not self._matches_collab_turn(params):
                 raise ProviderError("Codex item start targeted an unknown turn")
+            if (
+                _optional_bounded_integer(
+                    params.get("startedAtMs"),
+                    "item/started.startedAtMs",
+                    minimum=-(2**63),
+                )
+                is None
+            ):
+                raise ProviderError("item/started.startedAtMs is required")
             self._validate_item(
-                _require_object(params.get("item"), "item/started.item")
+                _require_object(params.get("item"), "item/started.item"),
+                owner_thread_id=_require_protocol_id(
+                    params.get("threadId"), "item/started.threadId"
+                ),
+                lifecycle="started",
             )
             return
         if method == "turn/completed":
             completed_thread_id = _require_protocol_id(
                 params.get("threadId"), "turn/completed.threadId"
             )
-            if self._thread_id is None or completed_thread_id != self._thread_id:
-                raise ProviderError("Codex completed an unknown thread")
             turn = _require_object(params.get("turn"), "turn/completed.turn")
             completed_turn_id = _require_protocol_id(
                 turn.get("id"), "turn/completed.turn.id"
             )
+            encoded_size = len(_canonical_json(turn, "turn/completed.turn"))
+            if encoded_size > _MAX_RETAINED_TEXT_BYTES:
+                raise ProviderError("completed turn exceeds the retained-byte limit")
+            if self._thread_id is None:
+                raise ProviderError("Codex completed an unknown thread")
+            if completed_thread_id != self._thread_id:
+                if completed_turn_id not in self._collab_turn_ids.get(
+                    completed_thread_id, set()
+                ):
+                    raise ProviderError("Codex completed an unknown child turn")
+                child_status = self._validate_completed_turn(turn, completed_thread_id)
+                if (
+                    completed_thread_id,
+                    completed_turn_id,
+                ) not in self._collab_turn_usage:
+                    raise ProviderError("Codex child turn omitted token usage")
+                self._collab_turn_ids[completed_thread_id].remove(completed_turn_id)
+                self._active_collab_thread_ids.discard(completed_thread_id)
+                self._collab_turn_statuses[child_status] += 1
+                return
             if self._turn_id is None or completed_turn_id != self._turn_id:
                 raise ProviderError("Codex completed an unknown turn")
             if self._turn_completed is not None:
                 raise ProviderError("Codex completed the same turn more than once")
-            encoded_size = len(_canonical_json(turn, "turn/completed.turn"))
-            if encoded_size > _MAX_RETAINED_TEXT_BYTES:
-                raise ProviderError("completed turn exceeds the retained-byte limit")
+            self._validate_completed_turn(turn, completed_thread_id)
+            children_with_turns = {
+                thread_id for thread_id, _turn_id in self._seen_collab_turn_ids
+            }
+            if (
+                self._pending_spawn_items
+                or self._active_nonspawn_items
+                or any(self._collab_turn_ids.values())
+                or self._active_collab_thread_ids
+                or not self._collab_thread_ids <= children_with_turns
+            ):
+                raise ProviderError(
+                    "Codex completed root turn with outstanding child work"
+                )
             self._turn_completed = turn
             return
         if method in _IGNORED_NOTIFICATIONS:
@@ -1755,11 +2175,448 @@ class _AppServerProtocol:
             raise ProviderError(f"prohibited Codex notification: {method}")
         raise ProviderError("unexpected Codex notification")
 
-    @staticmethod
-    def _validate_item(item: dict[str, Any]) -> None:
+    def _validate_item(
+        self,
+        item: dict[str, Any],
+        *,
+        owner_thread_id: str | None = None,
+        lifecycle: str | None = None,
+    ) -> None:
         item_type = _require_string(item.get("type"), "thread item type")
         if item_type not in _ALLOWED_ITEM_TYPES:
             raise ProviderError("prohibited or unknown Codex item type")
+        if item_type == "collabAgentToolCall":
+            self._validate_collab_item(
+                item,
+                owner_thread_id=owner_thread_id,
+                lifecycle=lifecycle,
+            )
+        elif item_type == "agentMessage":
+            _require_exact_keys(
+                item,
+                "agent message",
+                required={"id", "text", "type"},
+                optional={"memoryCitation", "phase"},
+            )
+            _require_protocol_id(item.get("id"), "agent message id")
+            if not isinstance(item.get("text"), str):
+                raise ProviderError("agent message text must be a string")
+            self._validate_message_phase(item.get("phase"))
+
+    def _validate_collab_item(
+        self,
+        item: dict[str, Any],
+        *,
+        owner_thread_id: str | None,
+        lifecycle: str | None,
+    ) -> None:
+        _require_exact_keys(
+            item,
+            "collaboration item",
+            required={
+                "agentsStates",
+                "id",
+                "receiverThreadIds",
+                "senderThreadId",
+                "status",
+                "tool",
+                "type",
+            },
+            optional={"model", "prompt", "reasoningEffort"},
+        )
+        item_id = _require_protocol_id(item.get("id"), "collaboration item id")
+        sender = _require_protocol_id(
+            item.get("senderThreadId"), "collaboration sender thread id"
+        )
+        if self._thread_id is None or (
+            sender != self._thread_id and sender not in self._collab_thread_ids
+        ):
+            raise ProviderError("collaboration item changed sender thread scope")
+        if owner_thread_id is not None and sender != owner_thread_id:
+            raise ProviderError("collaboration item sender disagrees with its envelope")
+        tool = _require_string(item.get("tool"), "collaboration tool")
+        if tool not in {"spawnAgent", "sendInput", "resumeAgent", "wait", "closeAgent"}:
+            raise ProviderError("collaboration tool is unknown")
+        raw_receivers = _require_list(
+            item.get("receiverThreadIds"),
+            "collaboration receiver thread ids",
+            maximum=_MAX_COLLAB_THREADS,
+        )
+        receivers = [
+            _require_protocol_id(value, "collaboration receiver thread id")
+            for value in raw_receivers
+        ]
+        if len(receivers) != len(set(receivers)) or (
+            self._thread_id in receivers
+            and (sender == self._thread_id or tool == "spawnAgent")
+        ):
+            raise ProviderError("collaboration receiver thread ids are invalid")
+        if any(receiver in self._failed_collab_thread_ids for receiver in receivers):
+            raise ProviderError("failed spawn child thread ID was reused")
+        status = _require_string(item.get("status"), "collaboration item status")
+        if status not in {"inProgress", "completed", "failed"}:
+            raise ProviderError("collaboration item status is unknown")
+        if lifecycle == "started" and status != "inProgress":
+            raise ProviderError("started collaboration item is not in progress")
+        if lifecycle in {"completed", "snapshot"} and status == "inProgress":
+            raise ProviderError("completed collaboration item is still in progress")
+        item_scope = (sender, item_id)
+        if lifecycle != "snapshot" and item_scope in self._terminal_collab_item_ids:
+            raise ProviderError("collaboration item ID was reused after termination")
+        model = item.get("model")
+        prompt = item.get("prompt")
+        reasoning_effort = item.get("reasoningEffort")
+        for field, value in (
+            ("model", model),
+            ("prompt", prompt),
+            ("reasoningEffort", reasoning_effort),
+        ):
+            if value is not None and not isinstance(value, str):
+                raise ProviderError(f"collaboration {field} must be a string or null")
+        prompt_digest = (
+            hashlib.sha256(prompt.encode("utf-8")).digest()
+            if prompt is not None
+            else None
+        )
+        if tool == "sendInput" and prompt_digest is None:
+            raise ProviderError("sendInput prompt must be a string")
+        spawn_placeholder = tool == "spawnAgent" and (
+            lifecycle == "started"
+            or (
+                lifecycle in {"completed", "snapshot"}
+                and status == "failed"
+                and not receivers
+            )
+        )
+        if spawn_placeholder:
+            if model not in {"", self._model} or reasoning_effort not in {
+                "medium",
+                self._reasoning_effort,
+            }:
+                raise ProviderError("spawnAgent placeholder metadata is invalid")
+        elif tool == "spawnAgent" and lifecycle == "completed":
+            if model != self._model or reasoning_effort != self._reasoning_effort:
+                raise ProviderError("terminal spawnAgent metadata is invalid")
+        elif reasoning_effort == "":
+            raise ProviderError(
+                "collaboration reasoningEffort must be a non-empty string or null"
+            )
+        elif model not in {None, self._model}:
+            raise ProviderError("collaboration model differs from the pinned model")
+        elif reasoning_effort not in {None, self._reasoning_effort}:
+            raise ProviderError(
+                "collaboration reasoningEffort differs from the pinned reasoning effort"
+            )
+        states = _require_object(item.get("agentsStates"), "collaboration agent states")
+        if len(states) > _MAX_COLLAB_THREADS:
+            raise ProviderError("collaboration agent-state count exceeds the limit")
+        agent_statuses: dict[str, str] = {}
+        for raw_thread_id, raw_state in states.items():
+            thread_id = _require_protocol_id(
+                raw_thread_id, "collaboration agent-state thread id"
+            )
+            if thread_id not in receivers:
+                raise ProviderError("collaboration state targeted an unknown receiver")
+            state = _require_object(raw_state, "collaboration agent state")
+            _require_exact_keys(
+                state,
+                "collaboration agent state",
+                required={"status"},
+                optional={"message"},
+            )
+            agent_status = _require_string(
+                state.get("status"), "collaboration agent status"
+            )
+            if agent_status not in {
+                "pendingInit",
+                "running",
+                "interrupted",
+                "completed",
+                "errored",
+                "shutdown",
+                "notFound",
+            }:
+                raise ProviderError("collaboration agent status is unknown")
+            agent_statuses[thread_id] = agent_status
+            message = state.get("message")
+            if message is not None:
+                if (
+                    len(
+                        _require_string(message, "collaboration agent message").encode(
+                            "utf-8"
+                        )
+                    )
+                    > _MAX_RETAINED_TEXT_BYTES
+                ):
+                    raise ProviderError("collaboration agent message exceeds the limit")
+        if (
+            tool == "wait"
+            and lifecycle in {"completed", "snapshot"}
+            and set(agent_statuses) != set(receivers)
+        ):
+            raise ProviderError("wait completion states disagree with its receivers")
+        terminal_item = hashlib.sha256(
+            _canonical_json(
+                {
+                    "agent_statuses": agent_statuses,
+                    "model": model,
+                    "prompt_sha256": (
+                        prompt_digest.hex() if prompt_digest is not None else None
+                    ),
+                    "reasoning_effort": reasoning_effort,
+                    "receivers": receivers,
+                    "status": status,
+                    "tool": tool,
+                },
+                "collaboration terminal item",
+            )
+        ).digest()
+        if (
+            lifecycle == "snapshot"
+            and self._terminal_collab_history.get(item_scope) != terminal_item
+        ):
+            raise ProviderError(
+                "collaboration snapshot lacked matching live terminal history"
+            )
+        active_nonspawn_item = self._active_nonspawn_items.get(item_scope)
+        if tool != "spawnAgent" and lifecycle == "started":
+            if active_nonspawn_item is not None:
+                raise ProviderError("collaboration item was already in progress")
+        elif tool != "spawnAgent" and lifecycle == "completed":
+            if active_nonspawn_item is None:
+                raise ProviderError("collaboration item completed without a start")
+            expected_tool, expected_receivers, expected_prompt = active_nonspawn_item
+            if expected_tool != tool:
+                raise ProviderError(
+                    "terminal collaboration item disagreed with its start"
+                )
+            if tool == "wait":
+                if not set(receivers).issubset(expected_receivers):
+                    raise ProviderError(
+                        "terminal collaboration item disagreed with its start"
+                    )
+            elif tuple(receivers) != expected_receivers:
+                raise ProviderError(
+                    "terminal collaboration item disagreed with its start"
+                )
+            if tool == "sendInput" and prompt_digest != expected_prompt:
+                raise ProviderError(
+                    "terminal sendInput prompt disagreed with its start"
+                )
+        if tool == "spawnAgent":
+            if lifecycle == "started" and receivers:
+                raise ProviderError("spawnAgent start must not have receivers")
+            if status == "completed" and len(receivers) != 1:
+                raise ProviderError(
+                    "completed spawnAgent must have exactly one receiver"
+                )
+            if len(receivers) > 1:
+                raise ProviderError("spawnAgent must have at most one receiver")
+            pending_key = (sender, item_id)
+            pending = pending_key in self._pending_spawn_items
+            expected_receiver, expected_prompt_digest = self._pending_spawn_items.get(
+                pending_key, (None, None)
+            )
+            if status == "inProgress" and pending:
+                raise ProviderError("spawnAgent item was already in progress")
+            if (
+                lifecycle == "completed"
+                and pending
+                and prompt_digest != expected_prompt_digest
+            ):
+                raise ProviderError(
+                    "terminal spawnAgent prompt disagreed with its start"
+                )
+            if expected_receiver is not None and receivers != [expected_receiver]:
+                raise ProviderError(
+                    "spawnAgent receiver did not match its pending child thread"
+                )
+            unbound_slots = sum(
+                receiver is None
+                for receiver, _prompt_digest in self._pending_spawn_items.values()
+            )
+            receiver = receivers[0] if receivers else None
+            failed_reservation = None
+            if (
+                status == "failed"
+                and receiver is None
+                and expected_receiver is None
+                and self._unbound_collab_thread_ids
+            ):
+                if unbound_slots != 1 or len(self._unbound_collab_thread_ids) != 1:
+                    raise ProviderError(
+                        "receiver-less spawn failure had ambiguous child scope"
+                    )
+                failed_reservation = next(iter(self._unbound_collab_thread_ids))
+            if (
+                lifecycle == "snapshot"
+                and status == "completed"
+                and receiver not in self._collab_thread_ids
+            ):
+                raise ProviderError(
+                    "spawnAgent snapshot lacked matching live terminal history"
+                )
+            if lifecycle != "snapshot" and status != "failed":
+                for claimed_receiver in receivers:
+                    parent_id = self._collab_parent_ids.get(claimed_receiver)
+                    if parent_id is not None and parent_id != sender:
+                        raise ProviderError(
+                            "spawnAgent receiver parent disagrees with its spawning sender"
+                        )
+            if (
+                status == "failed"
+                and receiver is not None
+                and (
+                    receiver in self._validated_collab_thread_ids
+                    or receiver in self._active_collab_thread_ids
+                    or self._collab_turn_ids.get(receiver)
+                )
+            ):
+                raise ProviderError("failed spawn retained an active child")
+            if (
+                lifecycle != "snapshot"
+                and status != "inProgress"
+                and pending
+                and expected_receiver is None
+            ):
+                if status == "failed" and receiver is None:
+                    pass
+                elif receiver in self._unbound_collab_thread_ids:
+                    self._bind_unbound_collab_thread(receiver, sender)
+                elif receiver is not None and receiver in self._collab_thread_ids:
+                    raise ProviderError("spawnAgent receiver was already claimed")
+                elif len(self._unbound_collab_thread_ids) >= unbound_slots:
+                    raise ProviderError(
+                        "spawnAgent receiver did not match a pending child thread"
+                    )
+            elif not pending and status != "inProgress" and lifecycle != "snapshot":
+                raise ProviderError("spawnAgent completed without a pending child")
+            new_receivers = set(receivers) - self._collab_thread_ids
+            if len(self._collab_thread_ids) + len(new_receivers) > _MAX_COLLAB_THREADS:
+                raise ProviderError("collaboration thread count exceeds the limit")
+            if lifecycle == "snapshot":
+                pass
+            elif status == "inProgress":
+                if any(receiver in self._collab_thread_ids for receiver in receivers):
+                    raise ProviderError("spawnAgent receiver was already claimed")
+                if len(self._pending_spawn_items) >= _MAX_COLLAB_THREADS:
+                    raise ProviderError("pending spawn count exceeds the limit")
+                self._pending_spawn_items[pending_key] = (receiver, prompt_digest)
+            else:
+                self._pending_spawn_items.pop(pending_key, None)
+            if lifecycle == "snapshot":
+                pass
+            elif status == "failed":
+                failed_receivers = set(receivers)
+                if failed_reservation is not None:
+                    failed_receivers.add(failed_reservation)
+                for failed_receiver in failed_receivers:
+                    self._failed_collab_thread_ids.add(failed_receiver)
+                    self._unbound_collab_thread_ids.discard(failed_receiver)
+                    self._collab_thread_ids.discard(failed_receiver)
+                    self._active_collab_thread_ids.discard(failed_receiver)
+                    self._collab_parent_ids.pop(failed_receiver, None)
+            else:
+                for claimed_receiver in receivers:
+                    self._collab_parent_ids[claimed_receiver] = sender
+                self._collab_thread_ids.update(receivers)
+                if status == "completed":
+                    self._completed_spawn_edges.add((sender, receivers[0]))
+        elif any(
+            receiver != self._thread_id and receiver not in self._collab_thread_ids
+            for receiver in receivers
+        ):
+            raise ProviderError("collaboration item targeted an unknown child thread")
+        if lifecycle != "snapshot":
+            for thread_id, agent_status in agent_statuses.items():
+                if (
+                    thread_id == self._thread_id
+                    or thread_id not in self._collab_thread_ids
+                ):
+                    continue
+                if agent_status in {"pendingInit", "running"}:
+                    child_has_completed_turn = any(
+                        seen_thread_id == thread_id
+                        for seen_thread_id, _turn_id in self._seen_collab_turn_ids
+                    ) and not self._collab_turn_ids.get(thread_id)
+                    if not (
+                        tool == "spawnAgent"
+                        and lifecycle == "completed"
+                        and child_has_completed_turn
+                    ):
+                        self._active_collab_thread_ids.add(thread_id)
+                else:
+                    self._active_collab_thread_ids.discard(thread_id)
+            if (
+                lifecycle == "completed"
+                and tool in {"sendInput", "resumeAgent"}
+                and status == "completed"
+            ):
+                self._active_collab_thread_ids.update(
+                    receiver
+                    for receiver in receivers
+                    if receiver != self._thread_id
+                    and receiver in self._collab_thread_ids
+                    and receiver not in agent_statuses
+                )
+            if (
+                lifecycle == "completed"
+                and tool == "closeAgent"
+                and status == "completed"
+            ):
+                closed = set(receivers)
+                while True:
+                    descendants = {
+                        thread_id
+                        for thread_id, parent_id in self._collab_parent_ids.items()
+                        if parent_id in closed
+                    }
+                    if descendants <= closed:
+                        break
+                    closed.update(descendants)
+                self._active_collab_thread_ids.difference_update(closed)
+        if lifecycle != "snapshot" and status in {"completed", "failed"}:
+            if len(self._terminal_collab_item_ids) >= _MAX_MESSAGES:
+                raise ProviderError(
+                    "terminal collaboration item count exceeds the limit"
+                )
+            self._terminal_collab_item_ids.add(item_scope)
+            self._terminal_collab_history[item_scope] = terminal_item
+        if lifecycle == "started" and tool != "spawnAgent":
+            if (
+                item_scope not in self._active_nonspawn_items
+                and len(self._active_nonspawn_items) >= _MAX_MESSAGES
+            ):
+                raise ProviderError("active collaboration item count exceeds the limit")
+            self._active_nonspawn_items[item_scope] = (
+                tool,
+                tuple(receivers),
+                prompt_digest,
+            )
+        elif lifecycle == "completed" and tool != "spawnAgent":
+            self._active_nonspawn_items.pop(item_scope, None)
+
+    def _validate_completed_turn(
+        self, turn: dict[str, Any], owner_thread_id: str
+    ) -> str:
+        status = _require_string(turn.get("status"), "completed turn status")
+        if status not in {"completed", "interrupted", "failed"}:
+            raise ProviderError("completed turn has a non-terminal status")
+        items = _require_list(
+            turn.get("items"), "completed turn items", maximum=_MAX_MESSAGES
+        )
+        items_view = _require_string(turn.get("itemsView"), "completed turn itemsView")
+        if items_view not in {"full", "notLoaded", "summary"}:
+            raise ProviderError("completed turn returned an unsupported item view")
+        if items_view == "notLoaded" and items:
+            raise ProviderError("Codex not-loaded turn items must be empty")
+        for index, raw_item in enumerate(items):
+            self._validate_item(
+                _require_object(raw_item, f"turn.items[{index}]"),
+                owner_thread_id=owner_thread_id,
+                lifecycle="snapshot",
+            )
+        return status
 
     @staticmethod
     def _validate_message_phase(value: Any) -> str | None:
@@ -1779,27 +2636,74 @@ class _AppServerProtocol:
             and turn_id == self._turn_id
         )
 
+    def _claim_collab_thread_scope(self, thread_id: str) -> bool:
+        if thread_id in self._failed_collab_thread_ids:
+            raise ProviderError("failed spawn child thread ID was reused")
+        if thread_id in self._collab_thread_ids:
+            return True
+        open_spawn_slots = sum(
+            receiver is None
+            for receiver, _prompt_digest in self._pending_spawn_items.values()
+        )
+        if len(self._unbound_collab_thread_ids) >= open_spawn_slots:
+            return False
+        if len(self._collab_thread_ids) >= _MAX_COLLAB_THREADS:
+            raise ProviderError("collaboration thread count exceeds the limit")
+        self._unbound_collab_thread_ids.add(thread_id)
+        self._collab_thread_ids.add(thread_id)
+        return True
+
+    def _bind_unbound_collab_thread(self, thread_id: str, sender: str) -> None:
+        parent_id = self._collab_parent_ids.get(thread_id)
+        if parent_id is not None and parent_id != sender:
+            raise ProviderError(
+                "spawnAgent receiver parent disagrees with its spawning sender"
+            )
+        self._collab_parent_ids[thread_id] = sender
+        self._unbound_collab_thread_ids.remove(thread_id)
+
+    def _matches_collab_turn(self, params: dict[str, Any]) -> bool:
+        thread_id = _require_protocol_id(
+            params.get("threadId"), "collaboration notification.threadId"
+        )
+        turn_id = _require_protocol_id(
+            params.get("turnId"), "collaboration notification.turnId"
+        )
+        return turn_id in self._collab_turn_ids.get(thread_id, set())
+
     def _validate_ignored_notification_scope(
         self, method: str, params: dict[str, Any]
     ) -> None:
-        if method.startswith("item/"):
-            if not self._matches_turn(params):
-                raise ProviderError(f"{method} omitted or changed turn scope")
-            return
-        if method.startswith("turn/"):
-            if not self._matches_turn(params):
+        if method.startswith(("item/", "turn/", "model/")):
+            if not self._matches_turn(params) and not self._matches_collab_turn(params):
                 raise ProviderError(f"{method} omitted or changed turn scope")
             return
         if method == "thread/status/changed":
+            _require_exact_keys(
+                params,
+                "thread/status/changed",
+                required={"status", "threadId"},
+            )
             thread_id = _require_protocol_id(
                 params.get("threadId"), "thread/status/changed.threadId"
             )
-            if self._thread_id is None or thread_id != self._thread_id:
+            status_type = self._validate_thread_status(
+                _require_object(params.get("status"), "thread/status/changed.status"),
+                "thread/status/changed.status",
+            )
+            if self._thread_id is None:
                 raise ProviderError("thread/status/changed changed thread scope")
-            return
-        if method.startswith("model/"):
-            if not self._matches_turn(params):
-                raise ProviderError(f"{method} omitted or changed turn scope")
+            if (
+                thread_id != self._thread_id
+                and thread_id not in self._collab_thread_ids
+            ):
+                if not self._claim_collab_thread_scope(thread_id):
+                    raise ProviderError("thread/status/changed changed thread scope")
+            if thread_id != self._thread_id:
+                if status_type == "active":
+                    self._active_collab_thread_ids.add(thread_id)
+                else:
+                    self._active_collab_thread_ids.discard(thread_id)
             return
         thread_id = params.get("threadId")
         turn_id = params.get("turnId")
@@ -1809,6 +2713,32 @@ class _AppServerProtocol:
         if turn_id is not None and self._turn_id is not None:
             if _require_protocol_id(turn_id, f"{method}.turnId") != self._turn_id:
                 raise ProviderError(f"{method} targeted an unknown turn")
+
+    @staticmethod
+    def _validate_thread_status(status: dict[str, Any], label: str) -> str:
+        status_type = _require_string(status.get("type"), f"{label}.type")
+        if status_type == "active":
+            _require_exact_keys(
+                status,
+                label,
+                required={"activeFlags", "type"},
+            )
+            flags = _require_list(
+                status.get("activeFlags"),
+                f"{label}.activeFlags",
+                maximum=2,
+            )
+            if any(
+                _require_string(flag, "thread active flag")
+                not in {"waitingOnApproval", "waitingOnUserInput"}
+                for flag in flags
+            ):
+                raise ProviderError("thread status has an unknown active flag")
+        elif status_type in {"notLoaded", "idle", "systemError"}:
+            _require_exact_keys(status, label, required={"type"})
+        else:
+            raise ProviderError("thread status is unknown")
+        return status_type
 
     @staticmethod
     def _validate_usage(raw: dict[str, Any]) -> dict[str, int]:
@@ -1841,17 +2771,21 @@ class _AppServerProtocol:
         if turn.get("error") is not None:
             raise ProviderError("completed Codex turn included an error")
         items = _require_list(turn.get("items"), "turn.items", maximum=_MAX_MESSAGES)
-        items_view = turn.get("itemsView", "full")
+        items_view = _require_string(turn.get("itemsView"), "turn.itemsView")
         messages: list[dict[str, str | None]]
         if items_view == "notLoaded":
             if items:
                 raise ProviderError("Codex not-loaded turn items must be empty")
             messages = list(self._completed_messages)
-        elif items_view == "full":
+        elif items_view in {"full", "summary"}:
             messages = []
             for index, raw_item in enumerate(items):
                 item = _require_object(raw_item, f"turn.items[{index}]")
-                self._validate_item(item)
+                self._validate_item(
+                    item,
+                    owner_thread_id=self._thread_id,
+                    lifecycle="snapshot",
+                )
                 if item.get("type") == "agentMessage":
                     messages.append(
                         {
@@ -1864,11 +2798,42 @@ class _AppServerProtocol:
                             ),
                         }
                     )
+            if items_view == "summary":
+                if len(items) != 1 or len(messages) != 1:
+                    raise ProviderError(
+                        "Codex summary turn must contain one agent message"
+                    )
+                summary_index = next(
+                    (
+                        index
+                        for index in range(len(self._completed_messages) - 1, -1, -1)
+                        if str(self._completed_messages[index]["text"]).strip()
+                    ),
+                    None,
+                )
+                if summary_index is None:
+                    summary_index = len(self._completed_messages) - 1
+                if (
+                    summary_index < 0
+                    or messages[0] != self._completed_messages[summary_index]
+                ):
+                    raise ProviderError(
+                        "Codex summary message disagrees with its completion event"
+                    )
+                if any(
+                    message["phase"] == "final_answer"
+                    for message in self._completed_messages[summary_index + 1 :]
+                ):
+                    raise ProviderError(
+                        "Codex summary omitted a completed final-answer message"
+                    )
+                messages = self._completed_messages[: summary_index + 1]
         else:
             raise ProviderError("Codex turn returned an unsupported item view")
         if not messages or not self._completed_messages:
             raise ProviderError("Codex turn omitted a completed final agent message")
-        message_ids = [message["id"] for message in messages]
+        id_source = self._completed_messages if items_view == "summary" else messages
+        message_ids = [message["id"] for message in id_source]
         if len(set(message_ids)) != len(message_ids):
             raise ProviderError("Codex turn repeated an agent-message id")
         if items_view == "full" and messages != self._completed_messages:
@@ -2097,7 +3062,7 @@ class _ProcessTransport:
             while view:
                 events = selector.select(_remaining(deadline, "Codex protocol write"))
                 if not events:
-                    raise ProviderError("Codex protocol write timed out")
+                    raise ProviderTimeoutError("Codex protocol write timed out")
                 try:
                     written = os.write(self._stdin_fd, view)
                 except BlockingIOError:
@@ -2127,7 +3092,7 @@ class _ProcessTransport:
                     raise ProviderError("Codex protocol frame exceeds the byte limit")
                 events = selector.select(_remaining(deadline, "Codex protocol read"))
                 if not events:
-                    raise ProviderError("Codex protocol read timed out")
+                    raise ProviderTimeoutError("Codex protocol read timed out")
                 try:
                     chunk = os.read(self._stdout_fd, 64 * 1024)
                 except BlockingIOError:
@@ -2434,6 +3399,7 @@ def _owner_lock(
     except OSError as exc:
         raise ProviderError(f"cannot open {label}: {exc}") from exc
     body_error: BaseException | None = None
+    serialization_timeout: ProviderTimeoutError | None = None
     try:
         identity = _validate_owner_file_descriptor(lock_path, descriptor, label)
         while True:
@@ -2441,27 +3407,36 @@ def _owner_lock(
                 fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
                 break
             except BlockingIOError:
-                _remaining(deadline, f"{label} serialization")
+                try:
+                    _remaining(deadline, f"{label} serialization")
+                except ProviderTimeoutError as exc:
+                    serialization_timeout = exc
+                    break
                 time.sleep(min(0.05, max(0.0, deadline - time.monotonic())))
-        identity = _validate_owner_file_descriptor(lock_path, descriptor, label)
-        try:
-            yield identity
-        except BaseException as exc:
-            body_error = exc
-            raise
-        finally:
+        if serialization_timeout is None:
+            identity = _validate_owner_file_descriptor(lock_path, descriptor, label)
             try:
-                _validate_owner_file_descriptor(lock_path, descriptor, label)
+                yield identity
             except BaseException as exc:
-                if body_error is not None:
-                    body_error.add_note(f"{label} integrity also failed: {exc}")
-                else:
-                    raise
+                body_error = exc
+                raise
+            finally:
+                try:
+                    _validate_owner_file_descriptor(lock_path, descriptor, label)
+                except BaseException as exc:
+                    if body_error is not None:
+                        body_error.add_note(f"{label} integrity also failed: {exc}")
+                    else:
+                        raise
     finally:
         try:
             fcntl.flock(descriptor, fcntl.LOCK_UN)
         finally:
             os.close(descriptor)
+    if serialization_timeout is not None:
+        raise ProviderTimeoutError(
+            str(serialization_timeout), cleanup_confirmed=True
+        ) from serialization_timeout
 
 
 @contextmanager
@@ -3137,13 +4112,15 @@ def _remove_invocation_root(path: Path) -> None:
         raise ProviderError(f"cannot remove Codex invocation root: {exc}") from exc
 
 
-def _prepare_workspace_runtime(workspace: Path) -> tuple[Path, ...]:
+def _prepare_workspace_runtime(workspace: Path) -> _WorkspaceRuntime:
     paths = (
         workspace / ".skill-eval-tmp",
         workspace / ".skill-eval-cache",
         workspace / ".skill-eval-home",
     )
     created: list[Path] = []
+    parent_descriptor: int | None = None
+    directories: list[tuple[str, int]] = []
     try:
         for path in paths:
             if path.exists() or path.is_symlink():
@@ -3152,32 +4129,182 @@ def _prepare_workspace_runtime(workspace: Path) -> tuple[Path, ...]:
                 )
             path.mkdir(mode=_PRIVATE_DIRECTORY_MODE)
             created.append(path)
+        flags = os.O_RDONLY | os.O_CLOEXEC | getattr(os, "O_DIRECTORY", 0)
+        flags |= getattr(os, "O_NOFOLLOW", 0)
+        parent_descriptor = os.open(workspace, flags)
+        for path in paths:
+            descriptor = os.open(path.name, flags, dir_fd=parent_descriptor)
+            os.fchmod(descriptor, _PRIVATE_DIRECTORY_MODE)
+            directories.append((path.name, descriptor))
     except BaseException:
+        for _name, descriptor in reversed(directories):
+            os.close(descriptor)
+        if parent_descriptor is not None:
+            os.close(parent_descriptor)
         for path in reversed(created):
             shutil.rmtree(path, ignore_errors=True)
         raise
-    return paths
+    assert parent_descriptor is not None
+    return _WorkspaceRuntime(parent_descriptor, tuple(directories))
 
 
-def _cleanup_workspace_runtime(paths: tuple[Path, ...]) -> None:
-    for path in paths:
-        try:
-            metadata = path.lstat()
-        except FileNotFoundError:
-            continue
-        except OSError as exc:
-            raise ProviderError(
-                f"cannot inspect workspace runtime path: {exc}"
-            ) from exc
-        try:
-            if stat.S_ISLNK(metadata.st_mode) or stat.S_ISREG(metadata.st_mode):
-                path.unlink()
-            elif stat.S_ISDIR(metadata.st_mode):
-                shutil.rmtree(path)
-            else:
-                raise ProviderError("workspace runtime path changed to an unsafe type")
-        except OSError as exc:
-            raise ProviderError(f"cannot clean workspace runtime path: {exc}") from exc
+def _open_workspace_runtime_directory(
+    parent_descriptor: int,
+    name: str,
+    expected_identity: tuple[int, int],
+) -> int:
+    path_flag = getattr(os, "O_PATH", None)
+    if path_flag is None:
+        raise ProviderError("workspace runtime cleanup requires Linux O_PATH")
+    path_descriptor = os.open(
+        name,
+        path_flag | os.O_CLOEXEC | os.O_DIRECTORY | os.O_NOFOLLOW,
+        dir_fd=parent_descriptor,
+    )
+    try:
+        metadata = os.fstat(path_descriptor)
+        if (
+            not stat.S_ISDIR(metadata.st_mode)
+            or (
+                metadata.st_dev,
+                metadata.st_ino,
+            )
+            != expected_identity
+        ):
+            raise ProviderError("workspace runtime entry changed to an unsafe type")
+        os.chmod(f"/proc/self/fd/{path_descriptor}", _PRIVATE_DIRECTORY_MODE)
+        descriptor = os.open(
+            ".",
+            os.O_RDONLY | os.O_CLOEXEC | os.O_DIRECTORY | os.O_NOFOLLOW,
+            dir_fd=path_descriptor,
+        )
+        opened = os.fstat(descriptor)
+        if (opened.st_dev, opened.st_ino) != (metadata.st_dev, metadata.st_ino):
+            os.close(descriptor)
+            raise ProviderError("workspace runtime directory identity changed")
+        return descriptor
+    finally:
+        os.close(path_descriptor)
+
+
+def _clear_workspace_runtime_directory(descriptor: int) -> None:
+    os.fchmod(descriptor, _PRIVATE_DIRECTORY_MODE)
+    root = os.fstat(descriptor)
+    stack: list[tuple[list[str], int, str | None, tuple[int, int]]] = [
+        (os.listdir(descriptor), 0, None, (root.st_dev, root.st_ino))
+    ]
+    current_descriptor = descriptor
+    flags = os.O_RDONLY | os.O_CLOEXEC | os.O_DIRECTORY | os.O_NOFOLLOW
+    try:
+        while stack:
+            names, index, name, identity = stack[-1]
+            if index < len(names):
+                child_name = names[index]
+                stack[-1] = (names, index + 1, name, identity)
+                metadata = os.stat(
+                    child_name,
+                    dir_fd=current_descriptor,
+                    follow_symlinks=False,
+                )
+                if not stat.S_ISDIR(metadata.st_mode):
+                    os.unlink(child_name, dir_fd=current_descriptor)
+                    continue
+                child_descriptor = _open_workspace_runtime_directory(
+                    current_descriptor,
+                    child_name,
+                    (metadata.st_dev, metadata.st_ino),
+                )
+                try:
+                    child_identity = os.fstat(child_descriptor)
+                    os.fchmod(child_descriptor, _PRIVATE_DIRECTORY_MODE)
+                    child_names = os.listdir(child_descriptor)
+                except BaseException:
+                    os.close(child_descriptor)
+                    raise
+                if current_descriptor != descriptor:
+                    os.close(current_descriptor)
+                current_descriptor = child_descriptor
+                stack.append(
+                    (
+                        child_names,
+                        0,
+                        child_name,
+                        (child_identity.st_dev, child_identity.st_ino),
+                    )
+                )
+                continue
+
+            if len(stack) == 1:
+                break
+            stack.pop()
+            parent_identity = stack[-1][3]
+            parent_descriptor = (
+                descriptor
+                if len(stack) == 1
+                else os.open("..", flags, dir_fd=current_descriptor)
+            )
+            try:
+                observed_parent = os.fstat(parent_descriptor)
+                if (observed_parent.st_dev, observed_parent.st_ino) != parent_identity:
+                    raise ProviderError(
+                        "workspace runtime parent directory identity changed"
+                    )
+                assert name is not None
+                current = os.stat(
+                    name,
+                    dir_fd=parent_descriptor,
+                    follow_symlinks=False,
+                )
+                if (current.st_dev, current.st_ino) != identity:
+                    raise ProviderError("workspace runtime directory identity changed")
+                os.rmdir(name, dir_fd=parent_descriptor)
+                if os.fstat(current_descriptor).st_nlink != 0:
+                    raise ProviderError(
+                        "workspace runtime directory removal was replaced"
+                    )
+            except BaseException:
+                if parent_descriptor != descriptor:
+                    os.close(parent_descriptor)
+                raise
+            os.close(current_descriptor)
+            current_descriptor = parent_descriptor
+    except BaseException:
+        if current_descriptor != descriptor:
+            os.close(current_descriptor)
+        raise
+
+
+def _cleanup_workspace_runtime(runtime: _WorkspaceRuntime) -> None:
+    try:
+        for name, descriptor in runtime.directories:
+            identity = os.fstat(descriptor)
+            _clear_workspace_runtime_directory(descriptor)
+            try:
+                current = os.stat(
+                    name,
+                    dir_fd=runtime.parent_descriptor,
+                    follow_symlinks=False,
+                )
+            except FileNotFoundError:
+                if identity.st_nlink != 0:
+                    raise ProviderError(
+                        "workspace runtime directory was renamed"
+                    ) from None
+                continue
+            if not stat.S_ISDIR(current.st_mode) or (
+                current.st_dev,
+                current.st_ino,
+            ) != (identity.st_dev, identity.st_ino):
+                raise ProviderError("workspace runtime directory identity changed")
+            os.rmdir(name, dir_fd=runtime.parent_descriptor)
+            if os.fstat(descriptor).st_nlink != 0:
+                raise ProviderError("workspace runtime directory removal was replaced")
+    except OSError as exc:
+        raise ProviderError(f"cannot clean workspace runtime path: {exc}") from exc
+    finally:
+        for _name, descriptor in runtime.directories:
+            os.close(descriptor)
+        os.close(runtime.parent_descriptor)
 
 
 def _fsync_private_directory(path: Path) -> None:
@@ -3521,6 +4648,7 @@ class CodexAppServerProvider:
         started = time.monotonic()
         transport: _Transport | None = None
         outcome: _TurnOutcome | None = None
+        timeout_error: ProviderTimeoutError | None = None
         sandbox: dict[str, Any] | None = None
         expected_command_sha256: str | None = None
         coordination_root = _validate_private_directory(
@@ -3551,7 +4679,7 @@ class CodexAppServerProvider:
             poison_recovered = poison_store.recover(poison_binding)
             _prepare_runtime_mountpoint(mounted_root)
             invocation_root = _new_invocation_root(self._runtime_root)
-            workspace_runtime: tuple[Path, ...] | None = None
+            workspace_runtime: _WorkspaceRuntime | None = None
             tool_attestations: list[VerifiedExecutable] = []
             try:
                 try:
@@ -3618,17 +4746,20 @@ class CodexAppServerProvider:
                             raise ProviderError(
                                 "Codex system context retained the host skill path"
                             )
-                    outcome = _AppServerProtocol(
-                        session,
-                        model=self._config.model,
-                        reasoning_effort=self._config.reasoning_effort,
-                        workspace=mounted_paths["work"],
-                        system_context=system_context,
-                        locked_efforts=self._lock.model_efforts[self._config.model],
-                        locked_thread_cli_version=self._lock.thread_cli_version,
-                        expected_codex_home=mounted_paths["codex-home"],
-                        on_dispatched=request.on_dispatched,
-                    ).run(request.prompt, deadline)
+                    try:
+                        outcome = _AppServerProtocol(
+                            session,
+                            model=self._config.model,
+                            reasoning_effort=self._config.reasoning_effort,
+                            workspace=mounted_paths["work"],
+                            system_context=system_context,
+                            locked_efforts=self._lock.model_efforts[self._config.model],
+                            locked_thread_cli_version=self._lock.thread_cli_version,
+                            expected_codex_home=mounted_paths["codex-home"],
+                            on_dispatched=request.on_dispatched,
+                        ).run(request.prompt, deadline)
+                    except ProviderTimeoutError as exc:
+                        timeout_error = exc
                 finally:
                     session.close()
                     if not self._transport_is_injected:
@@ -3685,6 +4816,10 @@ class CodexAppServerProvider:
                             )
                     finally:
                         _remove_invocation_root(invocation_root)
+        if timeout_error is not None:
+            raise ProviderTimeoutError(
+                str(timeout_error), cleanup_confirmed=True
+            ) from timeout_error
         assert outcome is not None and sandbox is not None
         return self._build_result(
             request,

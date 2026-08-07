@@ -774,6 +774,9 @@ class CodexProtocolTests(unittest.TestCase):
 
     def test_happy_path_adds_child_usage_to_reported_totals(self) -> None:
         protocol = _protocol(ScriptedTransport(Path("/runtime/work")))
+        protocol._validated_collab_thread_ids.add("child-1")
+        protocol._seen_collab_turn_ids.add(("child-1", "child-turn"))
+        protocol._collab_turn_statuses["failed"] = 1
         protocol._collab_turn_usage[("child-1", "child-turn")] = {
             "cached_input_tokens": 4,
             "input_tokens": 20,
@@ -794,6 +797,25 @@ class CodexProtocolTests(unittest.TestCase):
             },
         )
         self.assertEqual(outcome.raw_response["usage"], outcome.tokens)
+        self.assertEqual(
+            outcome.raw_response["collaboration"],
+            {
+                "child_thread_count": 1,
+                "child_turn_count": 1,
+                "child_turn_statuses": {
+                    "completed": 0,
+                    "failed": 1,
+                    "interrupted": 0,
+                },
+                "usage": {
+                    "cached_input_tokens": 4,
+                    "input_tokens": 20,
+                    "output_tokens": 8,
+                    "reasoning_output_tokens": 3,
+                    "total_tokens": 28,
+                },
+            },
+        )
 
     def test_post_completion_quota_read_rejects_new_collaboration_work(self) -> None:
         class PostCompletionTransport(ScriptedTransport):
@@ -1012,6 +1034,7 @@ class CodexProtocolTests(unittest.TestCase):
         self.assertIsNone(protocol._turn_completed)
         self.assertEqual(protocol._collab_turn_ids["child-1"], set())
         self.assertEqual(protocol._active_collab_thread_ids, set())
+        self.assertEqual(protocol._collab_turn_statuses["failed"], 1)
 
     def test_child_completion_without_usage_keeps_turn_active(self) -> None:
         protocol = _protocol(QueueTransport([]))
@@ -1172,6 +1195,7 @@ class CodexProtocolTests(unittest.TestCase):
                     "completedAtMs": 2,
                     "item": {
                         **resume,
+                        "prompt": "follow-up",
                         "status": "completed",
                         "tool": "sendInput",
                     },
@@ -1344,6 +1368,22 @@ class CodexProtocolTests(unittest.TestCase):
 
         self.assertEqual(outcome.final_output, "completed fixture")
         self.assertEqual(outcome.raw_response["turn"]["items_view"], "summary")
+
+    def test_summary_cannot_discard_a_blank_final_answer(self) -> None:
+        transport = ScriptedTransport(
+            Path("/runtime/work"),
+            additional_item_completed={
+                "id": "message-2",
+                "phase": "final_answer",
+                "text": "  ",
+                "type": "agentMessage",
+            },
+            final_phase=None,
+            turn_items_view="summary",
+        )
+
+        with self.assertRaisesRegex(ProviderError, "omitted.*final-answer"):
+            _protocol(transport).run("request", time.monotonic() + 5)
 
     def test_full_turn_rejects_non_object_items(self) -> None:
         transport = ScriptedTransport(
@@ -1734,7 +1774,43 @@ class CodexProtocolTests(unittest.TestCase):
         self.assertEqual(protocol._collab_parent_ids, {"child-1": "thread-1"})
         self.assertEqual(protocol._pending_spawn_items, {})
 
-    def test_terminal_collaboration_history_retains_prompt_digests(self) -> None:
+    def test_spawn_agent_accepts_explicit_pinned_start_and_failure_metadata(
+        self,
+    ) -> None:
+        for terminal_status, receivers in (
+            ("completed", ["child-1"]),
+            ("failed", []),
+        ):
+            protocol = _protocol(QueueTransport([]))
+            protocol._thread_id = "thread-1"
+            initial = {
+                "agentsStates": {},
+                "id": "item-1",
+                "model": "gpt-5.6-luna",
+                "prompt": "delegated task",
+                "reasoningEffort": "low",
+                "receiverThreadIds": [],
+                "senderThreadId": "thread-1",
+                "status": "inProgress",
+                "tool": "spawnAgent",
+                "type": "collabAgentToolCall",
+            }
+
+            with self.subTest(terminal_status=terminal_status):
+                protocol._validate_item(initial, lifecycle="started")
+                protocol._validate_item(
+                    {
+                        **initial,
+                        "agentsStates": {
+                            receiver: {"status": "running"} for receiver in receivers
+                        },
+                        "receiverThreadIds": receivers,
+                        "status": terminal_status,
+                    },
+                    lifecycle="completed",
+                )
+
+    def test_terminal_collaboration_history_retains_fixed_size_signatures(self) -> None:
         protocol = _protocol(QueueTransport([]))
         protocol._thread_id = "thread-1"
         protocol._collab_thread_ids.add("child-1")
@@ -1758,12 +1834,100 @@ class CodexProtocolTests(unittest.TestCase):
             },
             lifecycle="completed",
         )
-        retained_prompt = protocol._terminal_collab_history[("thread-1", "item-1")][5]
-        self.assertEqual(
-            retained_prompt,
-            hashlib.sha256(prompt.encode("utf-8")).digest(),
+        signature = protocol._terminal_collab_history[("thread-1", "item-1")]
+        self.assertIsInstance(signature, bytes)
+        self.assertEqual(len(signature), hashlib.sha256().digest_size)
+
+    def test_wait_completion_accepts_timeout_subset_and_unordered_receivers(
+        self,
+    ) -> None:
+        cases = (
+            ([], {}),
+            (["child-1"], {"child-1": {"status": "completed"}}),
+            (
+                ["child-2", "child-1"],
+                {
+                    "child-2": {"status": "completed"},
+                    "child-1": {"status": "completed"},
+                },
+            ),
         )
-        self.assertEqual(len(retained_prompt), hashlib.sha256().digest_size)
+        for receivers, states in cases:
+            protocol = _protocol(QueueTransport([]))
+            protocol._thread_id = "thread-1"
+            protocol._collab_thread_ids.update(("child-1", "child-2"))
+            initial = {
+                "agentsStates": {},
+                "id": "wait-1",
+                "receiverThreadIds": ["child-1", "child-2"],
+                "senderThreadId": "thread-1",
+                "status": "inProgress",
+                "tool": "wait",
+                "type": "collabAgentToolCall",
+            }
+
+            with self.subTest(receivers=receivers):
+                protocol._validate_item(initial, lifecycle="started")
+                protocol._validate_item(
+                    {
+                        **initial,
+                        "agentsStates": states,
+                        "receiverThreadIds": receivers,
+                        "status": "completed",
+                    },
+                    lifecycle="completed",
+                )
+
+    def test_send_input_completion_prompt_must_match_its_start(self) -> None:
+        protocol = _protocol(QueueTransport([]))
+        protocol._thread_id = "thread-1"
+        protocol._collab_thread_ids.add("child-1")
+        initial = {
+            "agentsStates": {},
+            "id": "send-1",
+            "prompt": "original input",
+            "receiverThreadIds": ["child-1"],
+            "senderThreadId": "thread-1",
+            "status": "inProgress",
+            "tool": "sendInput",
+            "type": "collabAgentToolCall",
+        }
+        protocol._validate_item(initial, lifecycle="started")
+
+        with self.assertRaisesRegex(ProviderError, "prompt disagreed"):
+            protocol._validate_item(
+                {**initial, "prompt": "changed input", "status": "completed"},
+                lifecycle="completed",
+            )
+
+    def test_successful_close_deactivates_receiver_and_descendants(self) -> None:
+        protocol = _protocol(QueueTransport([]))
+        protocol._thread_id = "thread-1"
+        protocol._collab_thread_ids.update(("child-1", "grandchild-1"))
+        protocol._collab_parent_ids.update(
+            {"child-1": "thread-1", "grandchild-1": "child-1"}
+        )
+        protocol._active_collab_thread_ids.update(("child-1", "grandchild-1"))
+        initial = {
+            "agentsStates": {},
+            "id": "close-1",
+            "receiverThreadIds": ["child-1"],
+            "senderThreadId": "thread-1",
+            "status": "inProgress",
+            "tool": "closeAgent",
+            "type": "collabAgentToolCall",
+        }
+        protocol._validate_item(initial, lifecycle="started")
+        protocol._validate_item(
+            {
+                **initial,
+                "agentsStates": {"child-1": {"status": "running"}},
+                "status": "completed",
+            },
+            lifecycle="completed",
+        )
+
+        self.assertEqual(protocol._active_collab_thread_ids, set())
 
     def test_item_lifecycle_requires_pinned_timestamp_fields(self) -> None:
         item = {
@@ -2732,6 +2896,7 @@ class CodexProtocolTests(unittest.TestCase):
             {
                 "agentsStates": {},
                 "id": "message-1",
+                "prompt": "root follow-up",
                 "receiverThreadIds": ["main-thread"],
                 "senderThreadId": "child-1",
                 "status": "completed",
@@ -4452,6 +4617,18 @@ class CodexProviderTests(unittest.TestCase):
 
         self.assertTrue(all(not path.exists() for path in paths))
         self.assertEqual(outside.read_text(encoding="ascii"), "preserve")
+
+    def test_workspace_runtime_cleanup_handles_deep_directory_trees(self) -> None:
+        runtime = _prepare_workspace_runtime(self.workspace)
+        current = self.workspace / ".skill-eval-tmp"
+        for _ in range(sys.getrecursionlimit() + 64):
+            current /= "d"
+            current.mkdir()
+
+        _cleanup_workspace_runtime(runtime)
+
+        for name in (".skill-eval-tmp", ".skill-eval-cache", ".skill-eval-home"):
+            self.assertFalse(self.workspace.joinpath(name).exists())
 
     def test_workspace_runtime_cleanup_does_not_follow_replaced_root(self) -> None:
         runtime = _prepare_workspace_runtime(self.workspace)

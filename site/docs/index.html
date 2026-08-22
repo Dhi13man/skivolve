@@ -52,7 +52,7 @@
 
     <main id="main-content" tabindex="-1">
       <header class="page-hero shell">
-        <p class="eyebrow">Documentation · Version 0.6.0</p>
+        <p class="eyebrow">Documentation · Version 0.7.0</p>
         <h1>Run your first evidence-bound evaluation.</h1>
         <p class="lede">Start with an offline dry run. It validates the suite, tools, exact sources, cases, provider locks, and selection before a model is invoked or result artifact is written.</p>
       </header>
@@ -77,20 +77,20 @@
           <p>Skivolve runs generated code. Read the <a href="../security/">security model</a> before using proprietary fixtures, private holdouts, or valuable provider credentials.</p>
 
           <h2 id="install">Install the verified release</h2>
-          <pre><code>git clone --branch v0.6.0 https://github.com/Dhi13man/skivolve.git
+          <pre><code>git clone --branch v0.7.0 https://github.com/Dhi13man/skivolve.git
 cd skivolve
 python3 -m venv .venv
 . .venv/bin/activate
-mkdir -p /tmp/skivolve-0.6.0
-gh release download v0.6.0 --repo Dhi13man/skivolve \
-  --pattern "skivolve-0.6.0*" --pattern SHA256SUMS \
-  --dir /tmp/skivolve-0.6.0
-(cd /tmp/skivolve-0.6.0 &amp;&amp; sha256sum --check SHA256SUMS)
+mkdir -p /tmp/skivolve-0.7.0
+gh release download v0.7.0 --repo Dhi13man/skivolve \
+  --pattern "skivolve-0.7.0*" --pattern SHA256SUMS \
+  --dir /tmp/skivolve-0.7.0
+(cd /tmp/skivolve-0.7.0 &amp;&amp; sha256sum --check SHA256SUMS)
 gh attestation verify \
-  /tmp/skivolve-0.6.0/skivolve-0.6.0-py3-none-any.whl \
+  /tmp/skivolve-0.7.0/skivolve-0.7.0-py3-none-any.whl \
   --repo Dhi13man/skivolve
 python -m pip install \
-  /tmp/skivolve-0.6.0/skivolve-0.6.0-py3-none-any.whl</code></pre>
+  /tmp/skivolve-0.7.0/skivolve-0.7.0-py3-none-any.whl</code></pre>
           <p>This leaves the tagged reference suite beside a provenance-verified installation. The runtime has one exact third-party dependency for RFC 8785 JSON canonicalization.</p>
 
           <h2 id="dry-run">Validate without dispatch</h2>

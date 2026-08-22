@@ -391,6 +391,12 @@ class SuiteFixture:
         self.fake_seccomp = self.suite_root / "apply-seccomp"
         self._write_suite("apply-seccomp", "#!/bin/sh\nexit 0\n")
         self.fake_seccomp.chmod(0o755)
+        self.fake_bwrap = self.suite_root / "bwrap"
+        self._write_suite("bwrap", "#!/bin/sh\nexit 0\n")
+        self.fake_bwrap.chmod(0o755)
+        self.fake_socat = self.suite_root / "socat"
+        self._write_suite("socat", "#!/bin/sh\nexit 0\n")
+        self.fake_socat.chmod(0o755)
         self.codex_protocol_lock = self.suite_root / "codex-protocol-lock.json"
         self.codex_protocol_lock.write_text(
             json.dumps(
@@ -5077,6 +5083,16 @@ class HoldoutReleaseProtocolTests(unittest.TestCase):
 
         # Act
         with (
+            patch.dict(
+                os.environ,
+                {
+                    "SKIVOLVE_CLAUDE_BWRAP_PATH": str(self.fixture.fake_bwrap),
+                    "SKIVOLVE_CLAUDE_SECCOMP_APPLY_PATH": str(
+                        self.fixture.fake_seccomp
+                    ),
+                    "SKIVOLVE_CLAUDE_SOCAT_PATH": str(self.fixture.fake_socat),
+                },
+            ),
             patch.object(
                 ClaudeCliProvider,
                 "_capture_version",
@@ -5092,12 +5108,24 @@ class HoldoutReleaseProtocolTests(unittest.TestCase):
                 "_probe_agent_seccomp",
                 return_value={"af_unix_socket_creation_denied": True},
             ) as probe_seccomp,
+            patch.object(
+                ClaudeCliProvider,
+                "_probe_agent_bwrap",
+                return_value={"version": "0.9.0"},
+            ) as probe_bwrap,
+            patch.object(
+                ClaudeCliProvider,
+                "_probe_agent_socat",
+                return_value={"version": "1.8.0.0"},
+            ) as probe_socat,
         ):
             runner = EvalRunner(suite, comparator_provider=self.provider)
         # Assert
         capture_version.assert_called_once_with()
         probe_sandbox.assert_called_once_with()
         probe_seccomp.assert_called_once()
+        probe_bwrap.assert_called_once()
+        probe_socat.assert_called_once()
         self.addCleanup(runner.close)
         self.production_runner(runner, bypass_generator_authority=False)
 
@@ -5145,7 +5173,10 @@ class HoldoutReleaseProtocolTests(unittest.TestCase):
         sandbox = runner.agent_provider._sandbox_evidence(
             ["systemd-run", "-p", "ProtectSystem=strict"],
             runner.agent_provider._agent_settings(
-                Path("/runtime/home"), Path("/runtime/bin/apply-seccomp")
+                Path("/runtime/home"),
+                Path("/runtime/bin/apply-seccomp"),
+                Path("/runtime/bin/bwrap"),
+                Path("/runtime/bin/socat"),
             ),
         )
         accepted = runner._agent_result_json(

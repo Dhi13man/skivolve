@@ -897,6 +897,8 @@ class ClaudeCliProvider:
     _MAX_CREDENTIAL_BYTES = 1024 * 1024
     _MINIMUM_AGENT_SANDBOX_VERSION = (2, 1, 187)
     _SECCOMP_PATH_ENV = "SKIVOLVE_CLAUDE_SECCOMP_APPLY_PATH"
+    _BWRAP_PATH_ENV = "SKIVOLVE_CLAUDE_BWRAP_PATH"
+    _SOCAT_PATH_ENV = "SKIVOLVE_CLAUDE_SOCAT_PATH"
 
     def __init__(self, config: ProviderConfig) -> None:
         if config.kind != "claude":
@@ -909,6 +911,12 @@ class ClaudeCliProvider:
         self._agent_seccomp_lock = threading.Lock()
         self._verified_agent_seccomp: VerifiedExecutable | None = None
         self._agent_seccomp_canary: dict[str, Any] | None = None
+        self._agent_bwrap_lock = threading.Lock()
+        self._verified_agent_bwrap: VerifiedExecutable | None = None
+        self._agent_bwrap_canary: dict[str, Any] | None = None
+        self._agent_socat_lock = threading.Lock()
+        self._verified_agent_socat: VerifiedExecutable | None = None
+        self._agent_socat_canary: dict[str, Any] | None = None
         try:
             self._verified_executable = VerifiedExecutable(Path(self._executable))
         except (CalibrationError, OSError) as exc:
@@ -958,6 +966,14 @@ class ClaudeCliProvider:
             self._verified_agent_seccomp.close()
             self._verified_agent_seccomp = None
             self._agent_seccomp_canary = None
+        if self._verified_agent_bwrap is not None:
+            self._verified_agent_bwrap.close()
+            self._verified_agent_bwrap = None
+            self._agent_bwrap_canary = None
+        if self._verified_agent_socat is not None:
+            self._verified_agent_socat.close()
+            self._verified_agent_socat = None
+            self._agent_socat_canary = None
         self._verified_executable.close()
 
     def _ensure_open(self) -> None:
@@ -1064,19 +1080,31 @@ class ClaudeCliProvider:
             raise ProviderError("agent request model differs from configured model")
         self._require_agent_sandbox_version()
         seccomp = self._agent_seccomp()
+        bwrap = self._agent_bwrap()
+        socat = self._agent_socat()
         try:
             self._verified_executable.ensure_source_unchanged()
             seccomp.ensure_source_unchanged()
+            bwrap.ensure_source_unchanged()
+            socat.ensure_source_unchanged()
         except (CalibrationError, OSError) as exc:
             raise ProviderError(
                 f"Claude agent runtime executable drifted: {exc}"
             ) from exc
         runtime_mount = self._runtime_mountpoint()
-        _host_home, _host_bin, _host_executable = self._prepare_runtime(runtime_root)
+        (
+            _host_home,
+            _host_bin,
+            _host_executable,
+            _host_bwrap,
+            _host_socat,
+        ) = self._prepare_runtime(runtime_root)
         runtime_home = runtime_mount / "home"
         runtime_bin = runtime_mount / "bin"
         runtime_executable = runtime_bin / "claude"
         runtime_seccomp = runtime_bin / "apply-seccomp"
+        runtime_bwrap = runtime_bin / "bwrap"
+        runtime_socat = runtime_bin / "socat"
         command = self._base_command(
             executable=runtime_executable,
             model=request.model,
@@ -1084,7 +1112,9 @@ class ClaudeCliProvider:
             permission_mode="acceptEdits",
             tools="Read,Edit,Write,Bash",
         )
-        agent_settings = self._agent_settings(runtime_home, runtime_seccomp)
+        agent_settings = self._agent_settings(
+            runtime_home, runtime_seccomp, runtime_bwrap, runtime_socat
+        )
         command.extend(
             [
                 "--settings",
@@ -1125,6 +1155,10 @@ class ClaudeCliProvider:
                 f"{self._verified_executable.execution_path}:{runtime_executable}",
                 "-p",
                 f"BindReadOnlyPaths={seccomp.execution_path}:{runtime_seccomp}",
+                "-p",
+                f"BindReadOnlyPaths={bwrap.execution_path}:{runtime_bwrap}",
+                "-p",
+                f"BindReadOnlyPaths={socat.execution_path}:{runtime_socat}",
             ]
         )
         tool_properties, tool_dirs = self._runtime_tool_bindings(
@@ -1352,9 +1386,109 @@ class ClaudeCliProvider:
             "stdout_sha256": hashlib.sha256(result.stdout).hexdigest(),
         }
 
+    def _agent_bwrap(self) -> VerifiedExecutable:
+        with self._agent_bwrap_lock:
+            if self._verified_agent_bwrap is not None:
+                self._verified_agent_bwrap.ensure_source_unchanged()
+                return self._verified_agent_bwrap
+            path = _resolve_agent_bwrap_executable(
+                environment_variable=self._BWRAP_PATH_ENV
+            )
+            try:
+                verified = VerifiedExecutable(path)
+            except (CalibrationError, OSError) as exc:
+                raise ProviderError(
+                    f"cannot attest Claude Bubblewrap executable: {exc}"
+                ) from exc
+            try:
+                canary = self._probe_agent_bwrap(verified)
+            except BaseException:
+                verified.close()
+                raise
+            self._verified_agent_bwrap = verified
+            self._agent_bwrap_canary = canary
+            return self._verified_agent_bwrap
+
+    @staticmethod
+    def _probe_agent_bwrap(verified: VerifiedExecutable) -> dict[str, Any]:
+        try:
+            result = execute_bounded_transport(
+                [verified.descriptor_path, "--version"],
+                cwd=Path.cwd(),
+                stdin_bytes=b"",
+                timeout_seconds=10,
+                stdout_limit=4096,
+                stderr_limit=4096,
+                terminate=lambda: None,
+                evidence={"kind": "bubblewrap-canary"},
+                process_label="Claude Bubblewrap canary",
+            )
+        except (CalibrationError, OSError) as exc:
+            raise ProviderError(f"Claude Bubblewrap canary failed: {exc}") from exc
+        banner = result.stdout.decode("utf-8", errors="replace").strip()
+        if (
+            result.returncode != 0
+            or re.fullmatch(r"bubblewrap \d+\.\d+\.\d+", banner) is None
+        ):
+            raise ProviderError("Claude Bubblewrap canary returned an invalid version")
+        return {
+            "version": banner.removeprefix("bubblewrap "),
+            "stdout_sha256": hashlib.sha256(result.stdout).hexdigest(),
+        }
+
+    def _agent_socat(self) -> VerifiedExecutable:
+        with self._agent_socat_lock:
+            if self._verified_agent_socat is not None:
+                self._verified_agent_socat.ensure_source_unchanged()
+                return self._verified_agent_socat
+            path = _resolve_agent_socat_executable(
+                environment_variable=self._SOCAT_PATH_ENV
+            )
+            try:
+                verified = VerifiedExecutable(path)
+            except (CalibrationError, OSError) as exc:
+                raise ProviderError(
+                    f"cannot attest Claude socat executable: {exc}"
+                ) from exc
+            try:
+                canary = self._probe_agent_socat(verified)
+            except BaseException:
+                verified.close()
+                raise
+            self._verified_agent_socat = verified
+            self._agent_socat_canary = canary
+            return self._verified_agent_socat
+
+    @staticmethod
+    def _probe_agent_socat(verified: VerifiedExecutable) -> dict[str, Any]:
+        try:
+            result = execute_bounded_transport(
+                [verified.descriptor_path, "-V"],
+                cwd=Path.cwd(),
+                stdin_bytes=b"",
+                timeout_seconds=10,
+                stdout_limit=16 * 1024,
+                stderr_limit=4096,
+                terminate=lambda: None,
+                evidence={"kind": "socat-canary"},
+                process_label="Claude socat canary",
+            )
+        except (CalibrationError, OSError) as exc:
+            raise ProviderError(f"Claude socat canary failed: {exc}") from exc
+        banner = result.stdout.decode("utf-8", errors="replace")
+        match = re.search(r"^socat version (\d+(?:\.\d+)+)\b", banner, re.MULTILINE)
+        if result.returncode != 0 or match is None:
+            raise ProviderError("Claude socat canary returned an invalid version")
+        return {
+            "version": match.group(1),
+            "stdout_sha256": hashlib.sha256(result.stdout).hexdigest(),
+        }
+
     def authority_runtime_provenance(self, role: str) -> dict[str, Any]:
         if role == "generation":
             seccomp = self._agent_seccomp()
+            bwrap = self._agent_bwrap()
+            socat = self._agent_socat()
             return {
                 "agent_sandbox_minimum_version": ".".join(
                     str(part) for part in self._MINIMUM_AGENT_SANDBOX_VERSION
@@ -1362,6 +1496,10 @@ class ClaudeCliProvider:
                 "sandbox_kind": capabilities_for("claude-cli").sandbox_kind,
                 "seccomp_apply_sha256": seccomp.sha256,
                 "seccomp_canary": copy.deepcopy(self._agent_seccomp_canary),
+                "bwrap_sha256": bwrap.sha256,
+                "bwrap_canary": copy.deepcopy(self._agent_bwrap_canary),
+                "socat_sha256": socat.sha256,
+                "socat_canary": copy.deepcopy(self._agent_socat_canary),
                 "systemd_version": self._sandbox_version,
                 "unix_socket_policy": "deny-new-af-unix-sockets",
             }
@@ -1373,7 +1511,12 @@ class ClaudeCliProvider:
         raise ProviderError(f"unsupported Claude provider role: {role}")
 
     @staticmethod
-    def _agent_settings(runtime_home: Path, runtime_seccomp: Path) -> dict[str, Any]:
+    def _agent_settings(
+        runtime_home: Path,
+        runtime_seccomp: Path,
+        runtime_bwrap: Path,
+        runtime_socat: Path,
+    ) -> dict[str, Any]:
         credential = runtime_home / ".claude" / ".credentials.json"
         return {
             "permissions": {
@@ -1394,6 +1537,8 @@ class ClaudeCliProvider:
                 },
                 "enabled": True,
                 "failIfUnavailable": True,
+                "bwrapPath": str(runtime_bwrap),
+                "socatPath": str(runtime_socat),
                 "filesystem": {
                     "denyRead": [str(credential)],
                     "denyWrite": [str(credential)],
@@ -1427,7 +1572,9 @@ class ClaudeCliProvider:
         mountpoint.chmod(0o700)
         return mountpoint
 
-    def _prepare_runtime(self, runtime_root: Path) -> tuple[Path, Path, Path]:
+    def _prepare_runtime(
+        self, runtime_root: Path
+    ) -> tuple[Path, Path, Path, Path, Path]:
         runtime_home = runtime_root / "home"
         runtime_config = runtime_home / ".claude"
         runtime_bin = runtime_root / "bin"
@@ -1443,7 +1590,17 @@ class ClaudeCliProvider:
         runtime_executable.touch(mode=0o700)
         runtime_seccomp = runtime_bin / "apply-seccomp"
         runtime_seccomp.touch(mode=0o700)
-        return runtime_home, runtime_bin, runtime_executable
+        runtime_bwrap = runtime_bin / "bwrap"
+        runtime_bwrap.touch(mode=0o700)
+        runtime_socat = runtime_bin / "socat"
+        runtime_socat.touch(mode=0o700)
+        return (
+            runtime_home,
+            runtime_bin,
+            runtime_executable,
+            runtime_bwrap,
+            runtime_socat,
+        )
 
     def _credential_source(self) -> Path:
         config_root = _claude_config_root()
@@ -1590,11 +1747,15 @@ class ClaudeCliProvider:
             "process_namespace": "unshare-user-pid-private-proc",
             "credential_scope": "controller-auth-denied-to-model-tools",
             "agent_tool_sandbox": {
+                "bwrap_sha256": self._agent_bwrap().sha256,
+                "bwrap_canary": copy.deepcopy(self._agent_bwrap_canary),
                 "credential_files_denied": True,
                 "fail_if_unavailable": True,
                 "network_domains_denied": True,
                 "seccomp_apply_sha256": self._agent_seccomp().sha256,
                 "seccomp_canary": copy.deepcopy(self._agent_seccomp_canary),
+                "socat_sha256": self._agent_socat().sha256,
+                "socat_canary": copy.deepcopy(self._agent_socat_canary),
                 "unsandboxed_commands_allowed": False,
                 "unix_socket_creation_denied": True,
             },
@@ -1811,6 +1972,53 @@ def _resolve_agent_seccomp_executable(
         "apply-seccomp helper; install it globally or set "
         f"{environment_variable}"
     )
+
+
+def _resolve_agent_bwrap_executable(*, environment_variable: str) -> Path:
+    explicit = os.environ.get(environment_variable)
+    if explicit is not None:
+        if not explicit or "\0" in explicit:
+            raise ProviderError(f"{environment_variable} is invalid")
+        candidate = Path(explicit).expanduser()
+    else:
+        located = shutil.which("bwrap")
+        if located is None:
+            raise ProviderError(
+                "Claude generation requires Bubblewrap on PATH or "
+                f"{environment_variable}"
+            )
+        candidate = Path(located)
+    try:
+        resolved = candidate.resolve(strict=True)
+    except OSError as exc:
+        raise ProviderError(
+            f"cannot resolve Claude Bubblewrap executable: {exc}"
+        ) from exc
+    if not resolved.is_file() or not os.access(resolved, os.X_OK):
+        raise ProviderError("Claude Bubblewrap path must be an executable file")
+    return resolved
+
+
+def _resolve_agent_socat_executable(*, environment_variable: str) -> Path:
+    explicit = os.environ.get(environment_variable)
+    if explicit is not None:
+        if not explicit or "\0" in explicit:
+            raise ProviderError(f"{environment_variable} is invalid")
+        candidate = Path(explicit).expanduser()
+    else:
+        located = shutil.which("socat")
+        if located is None:
+            raise ProviderError(
+                f"Claude generation requires socat on PATH or {environment_variable}"
+            )
+        candidate = Path(located)
+    try:
+        resolved = candidate.resolve(strict=True)
+    except OSError as exc:
+        raise ProviderError(f"cannot resolve Claude socat executable: {exc}") from exc
+    if not resolved.is_file() or not os.access(resolved, os.X_OK):
+        raise ProviderError("Claude socat path must be an executable file")
+    return resolved
 
 
 def _extract_models(payload: dict[str, Any]) -> tuple[str, ...]:

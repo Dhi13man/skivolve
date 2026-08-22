@@ -6,8 +6,8 @@ Skivolve executes untrusted generated code and integrates with authenticated cod
 
 | Version   | Supported |
 | --------- | --------- |
-| `0.6.x`   | Yes       |
-| `<=0.5.x` | No        |
+| `0.7.x`   | Yes       |
+| `<=0.6.x` | No        |
 
 Only the latest patch release receives security fixes. A security fix may change a provider protocol lock, release authority, schema, corpus, or result contract when preserving the old behavior would remain unsafe.
 

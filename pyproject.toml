@@ -38,6 +38,7 @@ Changelog = "https://github.com/Dhi13man/skivolve/blob/main/CHANGELOG.md"
 
 [project.scripts]
 skivolve = "skivolve.cli:main"
+skivolve-optimize = "skivolve.optimize_cli:main"
 skivolve-prepare-holdout = "skivolve.holdout_cli:main"
 
 [tool.setuptools.packages.find]

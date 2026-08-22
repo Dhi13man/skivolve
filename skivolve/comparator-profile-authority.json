@@ -4,8 +4,8 @@
     {
       "id": "plain-language-revision-v1",
       "descriptor_sha256": "60806e964d6c415d1ebb007976acedd1286a2ec6dd788442e58f345cbbd26b30",
-      "production_release_sha256": "aece988498ecc3427d1ca22073d7e6507306ffd79229350730055b8b649b6376",
-      "test_release_sha256": "6323bd82b5be4c1a232fbd892dbe8a6adbe1d5e92287443e313dac35533f3c8f",
+      "production_release_sha256": "046106fed8a839e349f4d64e9a7da4ba38794e4bbab6593f8c952534759a39d8",
+      "test_release_sha256": "47d1298ce6f0be56ce6fac59f0fa0551bea9de71956c1b517959c1d75b3db6eb",
       "certification_contract_sha256": "48acdc90136e871ab9cea000c76f2ec94c517ed4466d6cba5beb57f5b4a9c265",
       "requires_live_certification": true,
       "authority_scope": "test"
@@ -13,8 +13,8 @@
     {
       "id": "software-engineering-v1",
       "descriptor_sha256": "6a166ed3a313ee145d00519382c93c9fb56223aaf9b80f29806428f53f505e35",
-      "production_release_sha256": "42696ed92dcbc7e896a41458e6e229b29bf240de56da66f0fbc6730db24a709f",
-      "test_release_sha256": "a8809f54dea239c209d51b36dc7a4427e7fe37fbf9470489f0a8f5af72d4bad7",
+      "production_release_sha256": "a2deaa2cc413249acedf919aec32256c1cb45598158d94098e320295e4bb2432",
+      "test_release_sha256": "5f4c7e6dfaa080d26b8c62e3ec7c7fbbbfd0498ad14d9631156f567b75caf051",
       "certification_contract_sha256": "48acdc90136e871ab9cea000c76f2ec94c517ed4466d6cba5beb57f5b4a9c265",
       "requires_live_certification": true,
       "authority_scope": "production"

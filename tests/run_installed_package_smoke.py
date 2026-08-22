@@ -24,6 +24,7 @@ AUTHORITY_PATH = "skivolve/comparator-profile-authority.json"
 SOURCE_FINGERPRINT_DOMAIN = b"skivolve-source-fingerprint-v1\0"
 LEGACY_PACKAGE_PATH = "harness_evals/"
 LEGACY_COMMANDS = ("harness-evals", "harness-evals-prepare-holdout")
+REQUIRED_COMMANDS = ("skivolve", "skivolve-optimize", "skivolve-prepare-holdout")
 PROFILE_LAYOUTS = {
     "skivolve/comparator_calibration/profile.json": {
         "skivolve/comparator_calibration/README.md"
@@ -201,6 +202,13 @@ def _inspect_distributions(wheel: Path, sdist: Path) -> None:
         if len(entry_point_files) != 1:
             raise RuntimeError("wheel must contain exactly one entry_points.txt file")
         entry_points = archive.read(entry_point_files[0]).decode("utf-8")
+        missing_commands = [
+            command
+            for command in REQUIRED_COMMANDS
+            if f"{command} =" not in entry_points
+        ]
+        if missing_commands:
+            raise RuntimeError(f"wheel omitted console commands: {missing_commands}")
         retained_commands = [
             command for command in LEGACY_COMMANDS if f"{command} =" in entry_points
         ]
@@ -435,8 +443,19 @@ def _run_external_smoke(cli: Path, forbidden_root: Path) -> None:
         raise RuntimeError(
             f"installed environment retained legacy console commands: {retained_commands}"
         )
+    missing_commands = [
+        command for command in REQUIRED_COMMANDS if not (cli.parent / command).exists()
+    ]
+    if missing_commands:
+        raise RuntimeError(
+            f"installed environment omitted console commands: {missing_commands}"
+        )
 
     import skivolve
+    from skivolve import optimize_cli
+    from skivolve import skillopt_bridge
+    from skivolve import skillopt_codex_proxy
+    from skivolve import skillopt_sidecar
     from skivolve.comparator_profiles import (
         BUILTIN_PLAIN_LANGUAGE_PROFILE_ID,
         BUILTIN_SOFTWARE_PROFILE_ID,
@@ -447,6 +466,17 @@ def _run_external_smoke(cli: Path, forbidden_root: Path) -> None:
     package_path = Path(skivolve.__file__).resolve()
     if package_path.is_relative_to(forbidden_root.resolve()):
         raise RuntimeError(f"smoke imported checkout package: {package_path}")
+    for module in (
+        optimize_cli,
+        skillopt_bridge,
+        skillopt_codex_proxy,
+        skillopt_sidecar,
+    ):
+        module_path = Path(module.__file__).resolve()
+        if module_path.is_relative_to(forbidden_root.resolve()):
+            raise RuntimeError(f"smoke imported checkout sidecar: {module_path}")
+    if optimize_cli.build_parser().get_default("timeout_seconds") != 21600:
+        raise RuntimeError("installed optimize parser lost its bounded timeout default")
     plain_language = resolve_builtin_profile(BUILTIN_PLAIN_LANGUAGE_PROFILE_ID)
     if plain_language.authority_binding.authority_scope != "test":
         raise RuntimeError("installed plain-language profile has invalid authority")

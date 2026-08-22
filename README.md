@@ -22,7 +22,7 @@ Version `0.6.0` is an alpha release for expert evaluation work on Linux. The pub
 - Python 3.11 or newer.
 - Git, Go, and Node.js for the included fixtures.
 - GitHub CLI with `gh attestation` for release verification.
-- For Claude runs: Claude Code 2.1.187 or newer, `bubblewrap`, `socat`, and the executable `@anthropic-ai/sandbox-runtime` seccomp helper. Set `SKIVOLVE_CLAUDE_SECCOMP_APPLY_PATH` for a nonstandard helper location.
+- For Claude runs: Claude Code 2.1.187 or newer, `bubblewrap`, `socat`, and the executable `@anthropic-ai/sandbox-runtime` seccomp helper. For nonstandard locations, set `SKIVOLVE_CLAUDE_BWRAP_PATH`, `SKIVOLVE_CLAUDE_SOCAT_PATH`, or `SKIVOLVE_CLAUDE_SECCOMP_APPLY_PATH`; Skivolve attests and privately mounts all three helpers.
 - The authenticated provider executable configured by the suite. A dry run validates it and its local prerequisites without invoking a model.
 
 The runtime package has one exact third-party dependency, `rfc8785==0.1.4`, for RFC 8785 JSON canonicalization.
@@ -77,6 +77,47 @@ skivolve \
 ```
 
 This non-dry run invokes the configured generation provider and may consume metered API spend or subscription quota. Preflight reports the configured per-call and run ceilings; an unknown exact charge is accounted at its ceiling.
+
+## Generate A Candidate With SkillOpt
+
+SkillOpt is an optional candidate generator, not a replacement evaluator or a Skivolve runtime dependency. Skivolve accepts only a clean checkout of the reviewed upstream commit, sends explicitly selected public training and selection cases through SkillOpt, then evaluates the frozen output in a fresh Git clone. Candidate evaluation uses isolated Python module resolution so that clone cannot replace Skivolve's evaluator code, and outer validation independently reconstructs each deterministic candidate commit and whole-bundle snapshot. The command never reads a holdout or modifies, commits, or adopts the source skill. Linux and an authenticated standalone Codex CLI with its bundled Bubblewrap executable are required for the optimizer boundary.
+
+Prepare a separate environment from the reviewed source:
+
+```bash
+git clone https://github.com/microsoft/SkillOpt.git /opt/skillopt-src
+git -C /opt/skillopt-src checkout bdfdc30a8e17309c06cdbe8449f01bdecc120203
+python3 -m venv /opt/skillopt-venv
+/opt/skillopt-venv/bin/python -m pip install /opt/skillopt-src
+/opt/skillopt-venv/bin/python -m pip install -e /path/to/skivolve
+/opt/skillopt-venv/bin/python -m pip freeze --all > /opt/skillopt-venv.resolved.txt
+```
+
+Upstream declares dependency ranges rather than a lock. Review and retain the resolved environment record; Skivolve hashes the isolated environment tree, excluding generated Python caches, and rejects any environment drift between plan approval and execution.
+
+Preflight a one-step testing-skill pilot without creating persistent artifacts or invoking a model. The command uses private temporary clones to validate the exact generated fitness and attribution manifests and proves that the exact Codex permission profile denies every model-requested tool process before execution, then prints `expected_plan_sha256`:
+
+```bash
+skivolve-optimize \
+  --suite suite.json \
+  --skill testing \
+  --baseline-ref HEAD \
+  --train-case testing-real-boundary-fidelity \
+  --selection-case testing-oracle-sensitivity \
+  --validation-case testing-legacy-characterization \
+  --skillopt-source /opt/skillopt-src \
+  --skillopt-python /opt/skillopt-venv/bin/python \
+  --output-dir /home/operator/skivolve-skillopt-testing \
+  --dry-run
+```
+
+Run the same command without `--dry-run`, adding both `--confirm-live` and the reviewed hash as `--expected-plan-sha256 HASH`. Use an output parent outside `/tmp` and `/var/tmp`, because provider units use systemd `PrivateTmp`; the planner rejects those ephemeral roots before any model call. Live execution fails before creating its run directory or invoking a model if any selected suite, prompt, fixture, verifier, interpreter, isolated SkillOpt environment, upstream checkout, source commit, optimizer executable, bundled Bubblewrap executable, or plan binding changed. Prompts and the seed skill are read from the approved Git commit after the working-tree equality gate, eliminating a mutable-path read between approval and execution.
+
+This recipe permits at most 24 Skivolve target-generator launches: baseline selection, one training rollout, candidate selection, and fresh validation, with two arms and three repetitions per case. Its separate SkillOpt optimizer budget permits at most three Codex CLI starts of 900 seconds each, for a combined generator/optimizer invocation ceiling of 27. That figure excludes verifier, Git, and orchestration processes; it is not a total process ceiling. Generated optimizer suites force `objective_only`, so no comparator is invoked. Process groups, bounded input and output, per-optimizer, sidecar, preflight, and certification timeouts, and optimizer start count are enforced; the run fails closed at those boundaries. A Codex CLI process may perform multiple provider turns, so these are not token, provider-call, or monetary ceilings. Set a separate provider or account quota before live execution. Skivolve continues to use the suite's configured target provider and objective verifiers.
+
+The optimizer runs in a minimal Bubblewrap filesystem with a private home, a read-only run tree, a writable run-owned temporary directory, and a strict Codex permission profile that prevents model-generated tools from starting at all. The dry-run and live sidecar both probe this denial with the exact plan-bound Codex and bundled Bubblewrap before any optimizer model call. Provider-side apps, browser, image, plugin, elicitation, collaboration, memory, and related tool surfaces are disabled. Treat this as defense in depth for reviewed public inputs, not as permission to optimize secrets or adversarial prompt content: the trusted Codex parent process still needs authentication and network access, and provider-side spend authority remains external to Skivolve.
+
+The final `optimization.json` reports `qualified`, `rejected`, or `no_change`, binds every candidate, optimizer invocation ledger, and Skivolve run by SHA-256, and labels its authority `public-objective-diagnostic`. A qualified public result is not a superiority or release claim. Adoption remains a separate human-reviewed Git change.
 
 ## Suite Contract
 

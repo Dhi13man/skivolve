@@ -4,6 +4,15 @@ All notable changes to Skivolve are documented in this file. The format follows 
 
 ## [Unreleased]
 
+### Added
+
+- Added an optional, commit-pinned SkillOpt sidecar that generates one staged `SKILL.md` candidate from explicitly selected public cases and returns it to Skivolve for fresh objective-only qualification without private holdout access or automatic adoption. Its reviewed plan binds committed inputs, the isolated SkillOpt environment, interpreters, the Codex optimizer, and Codex's bundled Bubblewrap; dry and live preflights prove that model-requested tool processes are denied before execution, while live execution enforces bounded process I/O, process trees, optimizer starts, and timeouts and leaves monetary quota to the provider account.
+
+### Fixed
+
+- Attested and privately mounted Claude's native Bubblewrap and socat helpers inside generator units, so current Claude Code can enforce subprocess environment scrubbing and tool-network isolation without inheriting host helper paths.
+- Isolated sidecar evaluator imports from candidate clones and independently bound deterministic candidate commits, skill-file hashes, and whole-bundle snapshot hashes.
+
 ## [0.6.0] - 2026-08-07
 
 ### Added

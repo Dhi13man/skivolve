@@ -41,10 +41,14 @@ from skivolve.providers import (  # noqa: E402
     ComparatorRequest,
     FakeProvider,
     ProviderError,
+    _resolve_agent_bwrap_executable,
     _resolve_agent_seccomp_executable,
+    _resolve_agent_socat_executable,
 )
 
 _REAL_SECCOMP_PROBE = ClaudeCliProvider._probe_agent_seccomp
+_REAL_BWRAP_PROBE = ClaudeCliProvider._probe_agent_bwrap
+_REAL_SOCAT_PROBE = ClaudeCliProvider._probe_agent_socat
 
 
 class ClaudeCliProviderTests(unittest.TestCase):
@@ -63,11 +67,19 @@ class ClaudeCliProviderTests(unittest.TestCase):
         self.fake_seccomp = Path(self.credential_temporary.name) / "apply-seccomp"
         self.fake_seccomp.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
         self.fake_seccomp.chmod(0o700)
+        self.fake_bwrap = Path(self.credential_temporary.name) / "bwrap"
+        self.fake_bwrap.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        self.fake_bwrap.chmod(0o700)
+        self.fake_socat = Path(self.credential_temporary.name) / "socat"
+        self.fake_socat.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        self.fake_socat.chmod(0o700)
         config_environment = patch.dict(
             os.environ,
             {
                 "CLAUDE_CONFIG_DIR": str(config_root),
+                "SKIVOLVE_CLAUDE_BWRAP_PATH": str(self.fake_bwrap),
                 "SKIVOLVE_CLAUDE_SECCOMP_APPLY_PATH": str(self.fake_seccomp),
+                "SKIVOLVE_CLAUDE_SOCAT_PATH": str(self.fake_socat),
             },
         )
         config_environment.start()
@@ -90,9 +102,23 @@ class ClaudeCliProviderTests(unittest.TestCase):
             return_value={"af_unix_socket_creation_denied": True},
         )
         seccomp_canary.start()
+        bwrap_canary = patch.object(
+            ClaudeCliProvider,
+            "_probe_agent_bwrap",
+            return_value={"version": "0.9.0"},
+        )
+        bwrap_canary.start()
+        socat_canary = patch.object(
+            ClaudeCliProvider,
+            "_probe_agent_socat",
+            return_value={"version": "1.8.0.0"},
+        )
+        socat_canary.start()
         self.addCleanup(version.stop)
         self.addCleanup(sandbox.stop)
         self.addCleanup(seccomp_canary.stop)
+        self.addCleanup(bwrap_canary.stop)
+        self.addCleanup(socat_canary.stop)
 
     def config(self) -> ProviderConfig:
         return ProviderConfig(
@@ -611,6 +637,10 @@ print(json.dumps({
         self.assertEqual(
             result.sandbox["agent_tool_sandbox"],
             {
+                "bwrap_sha256": hashlib.sha256(
+                    self.fake_bwrap.read_bytes()
+                ).hexdigest(),
+                "bwrap_canary": {"version": "0.9.0"},
                 "credential_files_denied": True,
                 "fail_if_unavailable": True,
                 "network_domains_denied": True,
@@ -618,6 +648,10 @@ print(json.dumps({
                     self.fake_seccomp.read_bytes()
                 ).hexdigest(),
                 "seccomp_canary": {"af_unix_socket_creation_denied": True},
+                "socat_sha256": hashlib.sha256(
+                    self.fake_socat.read_bytes()
+                ).hexdigest(),
+                "socat_canary": {"version": "1.8.0.0"},
                 "unsandboxed_commands_allowed": False,
                 "unix_socket_creation_denied": True,
             },
@@ -653,6 +687,9 @@ print(json.dumps({
                 },
                 "sandbox": {
                     "allowUnsandboxedCommands": False,
+                    "bwrapPath": str(
+                        Path(f"/run/user/{os.getuid()}/skill-eval-runtime/bin/bwrap")
+                    ),
                     "credentials": {
                         "files": [{"mode": "deny", "path": str(credential)}]
                     },
@@ -675,6 +712,9 @@ print(json.dumps({
                             )
                         )
                     },
+                    "socatPath": str(
+                        Path(f"/run/user/{os.getuid()}/skill-eval-runtime/bin/socat")
+                    ),
                 },
             },
         )
@@ -696,6 +736,20 @@ print(json.dumps({
         self.assertTrue(any(value.startswith("BindPaths=") for value in command))
         self.assertTrue(
             any(value.startswith("BindReadOnlyPaths=") for value in command)
+        )
+        self.assertTrue(
+            any(
+                value.endswith("/skill-eval-runtime/bin/bwrap")
+                for value in command
+                if value.startswith("BindReadOnlyPaths=")
+            )
+        )
+        self.assertTrue(
+            any(
+                value.endswith("/skill-eval-runtime/bin/socat")
+                for value in command
+                if value.startswith("BindReadOnlyPaths=")
+            )
         )
         self.assertNotIn("--continue", command)
         self.assertNotIn("--resume", command)
@@ -878,6 +932,62 @@ print(json.dumps({
             )
         execute.assert_not_called()
 
+    @patch("skivolve.providers.execute_bounded_transport")
+    def test_agent_requires_attested_native_sandbox_tools_before_dispatch(
+        self, execute
+    ) -> None:
+        provider = ClaudeCliProvider(self.config())
+        provider._verified_agent_bwrap = None
+        with (
+            patch(
+                "skivolve.providers._resolve_agent_bwrap_executable",
+                side_effect=ProviderError("bwrap unavailable"),
+            ),
+            tempfile.TemporaryDirectory() as temporary,
+            self.assertRaisesRegex(ProviderError, "bwrap unavailable"),
+        ):
+            provider.run_agent(
+                AgentRequest(
+                    case_id="case",
+                    variant_id="variant",
+                    prompt="prompt",
+                    model="claude-test-20260710",
+                    workspace=Path(temporary),
+                    skill_snapshot=None,
+                    sandbox_pair_root=Path(temporary),
+                    sandbox_repository_root=Path(temporary),
+                    system_context="context",
+                    timeout_seconds=5,
+                )
+            )
+        execute.assert_not_called()
+
+        provider = ClaudeCliProvider(self.config())
+        provider._verified_agent_socat = None
+        with (
+            patch(
+                "skivolve.providers._resolve_agent_socat_executable",
+                side_effect=ProviderError("socat unavailable"),
+            ),
+            tempfile.TemporaryDirectory() as temporary,
+            self.assertRaisesRegex(ProviderError, "socat unavailable"),
+        ):
+            provider.run_agent(
+                AgentRequest(
+                    case_id="case",
+                    variant_id="variant",
+                    prompt="prompt",
+                    model="claude-test-20260710",
+                    workspace=Path(temporary),
+                    skill_snapshot=None,
+                    sandbox_pair_root=Path(temporary),
+                    sandbox_repository_root=Path(temporary),
+                    system_context="context",
+                    timeout_seconds=5,
+                )
+            )
+        execute.assert_not_called()
+
     def test_seccomp_canary_requires_observed_af_unix_denial(self) -> None:
         verified = Mock(descriptor_path="/verified/apply-seccomp")
         accepted = TransportExecution(
@@ -903,6 +1013,62 @@ print(json.dumps({
             with self.assertRaisesRegex(ProviderError, "did not deny AF_UNIX"):
                 _REAL_SECCOMP_PROBE(verified)
         self.assertEqual(execute.call_count, 2)
+
+    def test_native_sandbox_tool_canaries_require_valid_versions(self) -> None:
+        verified = Mock(descriptor_path="/verified/tool")
+        bwrap = TransportExecution(
+            returncode=0,
+            stdout=b"bubblewrap 0.9.0\n",
+            stderr=b"",
+            duration_seconds=0.01,
+            executor={},
+        )
+        socat = TransportExecution(
+            returncode=0,
+            stdout=b"socat version 1.8.0.0 on 03 Jul 2026\n",
+            stderr=b"",
+            duration_seconds=0.01,
+            executor={},
+        )
+        invalid = TransportExecution(
+            returncode=0,
+            stdout=b"not-a-version\n",
+            stderr=b"",
+            duration_seconds=0.01,
+            executor={},
+        )
+        with patch(
+            "skivolve.providers.execute_bounded_transport",
+            side_effect=[bwrap, socat, invalid, invalid],
+        ):
+            self.assertEqual(_REAL_BWRAP_PROBE(verified)["version"], "0.9.0")
+            self.assertEqual(_REAL_SOCAT_PROBE(verified)["version"], "1.8.0.0")
+            with self.assertRaisesRegex(ProviderError, "invalid version"):
+                _REAL_BWRAP_PROBE(verified)
+            with self.assertRaisesRegex(ProviderError, "invalid version"):
+                _REAL_SOCAT_PROBE(verified)
+
+    def test_native_sandbox_tools_resolve_from_explicit_paths(self) -> None:
+        with patch.dict(
+            os.environ,
+            {
+                "SKIVOLVE_TEST_BWRAP_PATH": str(self.fake_bwrap),
+                "SKIVOLVE_TEST_SOCAT_PATH": str(self.fake_socat),
+            },
+            clear=True,
+        ):
+            self.assertEqual(
+                _resolve_agent_bwrap_executable(
+                    environment_variable="SKIVOLVE_TEST_BWRAP_PATH"
+                ),
+                self.fake_bwrap.resolve(),
+            )
+            self.assertEqual(
+                _resolve_agent_socat_executable(
+                    environment_variable="SKIVOLVE_TEST_SOCAT_PATH"
+                ),
+                self.fake_socat.resolve(),
+            )
 
     def test_seccomp_helper_resolves_from_executable_npm_prefix(self) -> None:
         prefix = Path(self.credential_temporary.name) / "node-prefix"

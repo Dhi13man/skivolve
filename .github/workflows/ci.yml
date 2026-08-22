@@ -196,6 +196,7 @@ jobs:
           /tmp/skivolve-smoke/bin/python -m pip install --no-deps dist/*.whl
           /tmp/skivolve-smoke/bin/skivolve --help
           /tmp/skivolve-smoke/bin/python -m skivolve --help
+          /tmp/skivolve-smoke/bin/skivolve-optimize --help
           /tmp/skivolve-smoke/bin/skivolve-prepare-holdout --help
           cd /tmp
           /tmp/skivolve-smoke/bin/python "$GITHUB_WORKSPACE/tests/run_installed_package_smoke.py" --cli /tmp/skivolve-smoke/bin/skivolve --forbid-root "$GITHUB_WORKSPACE"

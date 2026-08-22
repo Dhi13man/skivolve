@@ -4,6 +4,8 @@ All notable changes to Skivolve are documented in this file. The format follows 
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-08-22
+
 ### Added
 
 - Added an optional, commit-pinned SkillOpt sidecar that generates one staged `SKILL.md` candidate from explicitly selected public cases and returns it to Skivolve for fresh objective-only qualification without private holdout access or automatic adoption. Its reviewed plan binds committed inputs, the isolated SkillOpt environment, interpreters, the Codex optimizer, and Codex's bundled Bubblewrap; dry and live preflights prove that model-requested tool processes are denied before execution, while live execution enforces bounded process I/O, process trees, optimizer starts, and timeouts and leaves monetary quota to the provider account.
@@ -12,6 +14,7 @@ All notable changes to Skivolve are documented in this file. The format follows 
 
 - Attested and privately mounted Claude's native Bubblewrap and socat helpers inside generator units, so current Claude Code can enforce subprocess environment scrubbing and tool-network isolation without inheriting host helper paths.
 - Isolated sidecar evaluator imports from candidate clones and independently bound deterministic candidate commits, skill-file hashes, and whole-bundle snapshot hashes.
+- Bounded sidecar environment and evaluation-input traversal before collection, bound resolved symlink target bytes into environment provenance, and completed private artifact writes across short operating-system writes.
 
 ## [0.6.0] - 2026-08-07
 
@@ -140,7 +143,8 @@ All notable changes to Skivolve are documented in this file. The format follows 
 - Repository-local `engineering` and `testing` reference bundles for exercising Git-bound comparison variants.
 - CI, CodeQL, OpenSSF Scorecard, Dependabot, issue forms, contribution policy, security reporting, governance, support, and release documentation.
 
-[Unreleased]: https://github.com/Dhi13man/skivolve/compare/v0.6.0...HEAD
+[Unreleased]: https://github.com/Dhi13man/skivolve/compare/v0.7.0...HEAD
+[0.7.0]: https://github.com/Dhi13man/skivolve/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/Dhi13man/skivolve/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/Dhi13man/skivolve/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/Dhi13man/skivolve/compare/v0.3.0...v0.4.0

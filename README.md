@@ -6,7 +6,7 @@
 
 Skivolve runs reproducible A/B evaluations of agent skills and instruction bundles through isolated harnesses, objective case verifiers, and calibrated blinded comparison.
 
-Version `0.6.0` is an alpha release for expert evaluation work on Linux. The public repository contains train and validation cases, not a private holdout, and ships no live comparator certification. It does not claim that one harness or bundle is superior. The production `software-engineering-v1` comparator profile is calibrated for software changes; the bundled plain-language profile has test authority and author-authored labels, not independent production calibration.
+Version `0.7.0` is an alpha release for expert evaluation work on Linux. The public repository contains train and validation cases, not a private holdout, and ships no live comparator certification. It does not claim that one harness or bundle is superior. The production `software-engineering-v1` comparator profile is calibrated for software changes; the bundled plain-language profile has test authority and author-authored labels, not independent production calibration.
 
 ## What Skivolve Provides
 
@@ -32,7 +32,7 @@ The runtime package has one exact third-party dependency, `rfc8785==0.1.4`, for 
 Clone the tagged source so the reference suite, cases, and pinned Git baseline are available:
 
 ```bash
-git clone --branch v0.6.0 https://github.com/Dhi13man/skivolve.git
+git clone --branch v0.7.0 https://github.com/Dhi13man/skivolve.git
 cd skivolve
 python3 -m venv .venv
 . .venv/bin/activate
@@ -41,16 +41,16 @@ python3 -m venv .venv
 Download, verify, and install the release wheel:
 
 ```bash
-mkdir -p /tmp/skivolve-0.6.0
-gh release download v0.6.0 --repo Dhi13man/skivolve \
-  --pattern "skivolve-0.6.0*" --pattern SHA256SUMS \
-  --dir /tmp/skivolve-0.6.0
-(cd /tmp/skivolve-0.6.0 && sha256sum --check SHA256SUMS)
+mkdir -p /tmp/skivolve-0.7.0
+gh release download v0.7.0 --repo Dhi13man/skivolve \
+  --pattern "skivolve-0.7.0*" --pattern SHA256SUMS \
+  --dir /tmp/skivolve-0.7.0
+(cd /tmp/skivolve-0.7.0 && sha256sum --check SHA256SUMS)
 gh attestation verify \
-  /tmp/skivolve-0.6.0/skivolve-0.6.0-py3-none-any.whl \
+  /tmp/skivolve-0.7.0/skivolve-0.7.0-py3-none-any.whl \
   --repo Dhi13man/skivolve
 python -m pip install \
-  /tmp/skivolve-0.6.0/skivolve-0.6.0-py3-none-any.whl
+  /tmp/skivolve-0.7.0/skivolve-0.7.0-py3-none-any.whl
 ```
 
 ## Run A Comparison
@@ -93,7 +93,7 @@ python3 -m venv /opt/skillopt-venv
 /opt/skillopt-venv/bin/python -m pip freeze --all > /opt/skillopt-venv.resolved.txt
 ```
 
-Upstream declares dependency ranges rather than a lock. Review and retain the resolved environment record; Skivolve hashes the isolated environment tree, excluding generated Python caches, and rejects any environment drift between plan approval and execution.
+Upstream declares dependency ranges rather than a lock. Review and retain the resolved environment record; Skivolve hashes the bounded isolated-environment tree and resolved file targets of its symlinks, excluding generated Python caches, and rejects any environment drift between plan approval and execution.
 
 Preflight a one-step testing-skill pilot without creating persistent artifacts or invoking a model. The command uses private temporary clones to validate the exact generated fitness and attribution manifests and proves that the exact Codex permission profile denies every model-requested tool process before execution, then prints `expected_plan_sha256`:
 

@@ -28,6 +28,9 @@ MAX_COMMAND_OUTPUT_BYTES = 4 * 1024 * 1024
 MAX_COMMAND_INPUT_BYTES = 4 * 1024 * 1024
 MAX_ENVIRONMENT_FILES = 250_000
 MAX_ENVIRONMENT_BYTES = 2 * 1024 * 1024 * 1024
+MAX_EVALUATION_INPUT_ENTRIES = 100_000
+MAX_EVALUATION_INPUT_BYTES = 1024 * 1024 * 1024
+MAX_TREE_DEPTH = 64
 OPTIMIZER_ATTEMPTS_PER_CALL = 3
 OPTIMIZER_CALL_TIMEOUT_SECONDS = 900
 COMPARISON_ID = "skillopt-vs-seed"
@@ -200,45 +203,109 @@ def _environment_sha256(root: Path) -> str:
 
     records: list[dict[str, Any]] = []
     total_bytes = 0
-    for path in sorted(root.rglob("*"), key=lambda item: item.as_posix()):
-        relative = path.relative_to(root)
-        if (
-            any(part in _GENERATED_CACHE_DIRECTORIES for part in relative.parts)
-            or path.suffix in _GENERATED_CACHE_SUFFIXES
-        ):
-            continue
-        metadata = path.lstat()
-        if stat.S_ISDIR(metadata.st_mode):
-            continue
-        if len(records) >= MAX_ENVIRONMENT_FILES:
+    pending = [(root, 0)]
+    entry_count = 0
+    while pending:
+        directory, depth = pending.pop()
+        if depth >= MAX_TREE_DEPTH:
             raise SkillOptBridgeError(
-                f"SkillOpt environment exceeds {MAX_ENVIRONMENT_FILES} entries"
+                f"SkillOpt environment exceeds {MAX_TREE_DEPTH} directory levels"
             )
-        if stat.S_ISLNK(metadata.st_mode):
+        children: list[tuple[Path, os.stat_result]] = []
+        try:
+            with os.scandir(directory) as entries:
+                for entry in entries:
+                    entry_count += 1
+                    if entry_count > MAX_ENVIRONMENT_FILES:
+                        raise SkillOptBridgeError(
+                            "SkillOpt environment exceeds "
+                            f"{MAX_ENVIRONMENT_FILES} entries"
+                        )
+                    children.append(
+                        (Path(entry.path), entry.stat(follow_symlinks=False))
+                    )
+        except OSError as exc:
+            raise SkillOptBridgeError(
+                f"cannot traverse SkillOpt environment: {exc}"
+            ) from exc
+
+        directories: list[Path] = []
+        for path, metadata in sorted(children, key=lambda item: item[0].name):
+            relative = path.relative_to(root)
+            if stat.S_ISDIR(metadata.st_mode):
+                if path.name not in _GENERATED_CACHE_DIRECTORIES:
+                    directories.append(path)
+                continue
+            if (
+                any(part in _GENERATED_CACHE_DIRECTORIES for part in relative.parts)
+                or path.suffix in _GENERATED_CACHE_SUFFIXES
+            ):
+                continue
+            if stat.S_ISLNK(metadata.st_mode):
+                try:
+                    target = path.resolve(strict=True)
+                    target_metadata = target.stat()
+                except OSError as exc:
+                    raise SkillOptBridgeError(
+                        f"cannot resolve SkillOpt environment symlink {path}: {exc}"
+                    ) from exc
+                target_inside_environment = target.is_relative_to(root)
+                target_name = (
+                    target.relative_to(root).as_posix()
+                    if target_inside_environment
+                    else str(target)
+                )
+                record: dict[str, Any] = {
+                    "path": relative.as_posix(),
+                    "symlink": os.readlink(path),
+                    "target": target_name,
+                    "target_scope": (
+                        "environment" if target_inside_environment else "external"
+                    ),
+                }
+                if stat.S_ISREG(target_metadata.st_mode):
+                    total_bytes += target_metadata.st_size
+                    if total_bytes > MAX_ENVIRONMENT_BYTES:
+                        raise SkillOptBridgeError(
+                            "SkillOpt environment exceeds "
+                            f"{MAX_ENVIRONMENT_BYTES} bytes"
+                        )
+                    record.update(
+                        {
+                            "target_sha256": sha256_file(target),
+                            "target_bytes": target_metadata.st_size,
+                            "target_executable": bool(target_metadata.st_mode & 0o111),
+                        }
+                    )
+                elif (
+                    stat.S_ISDIR(target_metadata.st_mode) and target_inside_environment
+                ):
+                    record["target_type"] = "directory"
+                else:
+                    raise SkillOptBridgeError(
+                        f"SkillOpt environment symlink has an unsafe target: {path}"
+                    )
+                records.append(record)
+                continue
+            if not stat.S_ISREG(metadata.st_mode):
+                raise SkillOptBridgeError(
+                    f"SkillOpt environment contains a special file: {path}"
+                )
+            total_bytes += metadata.st_size
+            if total_bytes > MAX_ENVIRONMENT_BYTES:
+                raise SkillOptBridgeError(
+                    f"SkillOpt environment exceeds {MAX_ENVIRONMENT_BYTES} bytes"
+                )
             records.append(
                 {
                     "path": relative.as_posix(),
-                    "symlink": os.readlink(path),
+                    "sha256": sha256_file(path),
+                    "bytes": metadata.st_size,
+                    "executable": bool(metadata.st_mode & 0o111),
                 }
             )
-            continue
-        if not stat.S_ISREG(metadata.st_mode):
-            raise SkillOptBridgeError(
-                f"SkillOpt environment contains a special file: {path}"
-            )
-        total_bytes += metadata.st_size
-        if total_bytes > MAX_ENVIRONMENT_BYTES:
-            raise SkillOptBridgeError(
-                f"SkillOpt environment exceeds {MAX_ENVIRONMENT_BYTES} bytes"
-            )
-        records.append(
-            {
-                "path": relative.as_posix(),
-                "sha256": sha256_file(path),
-                "bytes": metadata.st_size,
-                "executable": bool(metadata.st_mode & 0o111),
-            }
-        )
+        pending.extend((path, depth + 1) for path in reversed(directories))
+    records.sort(key=lambda record: str(record["path"]))
     return sha256_bytes(canonical_bytes(records))
 
 
@@ -284,7 +351,7 @@ def private_write_json(path: Path, value: Any) -> None:
     flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
     descriptor = os.open(path, flags, 0o600)
     try:
-        os.write(descriptor, data.encode("utf-8"))
+        _write_all(descriptor, data.encode("utf-8"))
         os.fsync(descriptor)
     finally:
         os.close(descriptor)
@@ -294,10 +361,19 @@ def private_write_bytes(path: Path, value: bytes) -> None:
     flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
     descriptor = os.open(path, flags, 0o600)
     try:
-        os.write(descriptor, value)
+        _write_all(descriptor, value)
         os.fsync(descriptor)
     finally:
         os.close(descriptor)
+
+
+def _write_all(descriptor: int, value: bytes) -> None:
+    remaining = memoryview(value)
+    while remaining:
+        written = os.write(descriptor, remaining)
+        if written <= 0:
+            raise SkillOptBridgeError("private artifact write made no progress")
+        remaining = remaining[written:]
 
 
 def load_strict_json(path: Path, *, maximum_bytes: int = 1024 * 1024) -> Any:
@@ -690,8 +766,22 @@ def _evaluation_input_records(
     """Describe every selected public prompt, fixture, and verifier input."""
 
     files: dict[str, dict[str, Any]] = {}
+    visited: set[Path] = set()
+    entry_count = 0
+    total_bytes = 0
 
-    def add_path(path: Path) -> None:
+    def add_path(path: Path, *, depth: int = 0, counted: bool = False) -> None:
+        nonlocal entry_count, total_bytes
+        absolute = Path(os.path.abspath(path))
+        if absolute in visited:
+            return
+        visited.add(absolute)
+        if not counted:
+            entry_count += 1
+            if entry_count > MAX_EVALUATION_INPUT_ENTRIES:
+                raise SkillOptBridgeError(
+                    f"evaluation inputs exceed {MAX_EVALUATION_INPUT_ENTRIES} entries"
+                )
         if (
             any(part in _GENERATED_CACHE_DIRECTORIES for part in path.parts)
             or path.suffix in _GENERATED_CACHE_SUFFIXES
@@ -706,23 +796,40 @@ def _evaluation_input_records(
         if stat.S_ISLNK(metadata.st_mode):
             raise SkillOptBridgeError(f"evaluation input must not be a symlink: {path}")
         if path.is_dir():
-            for child in sorted(path.rglob("*"), key=lambda item: item.as_posix()):
-                if (
-                    any(part in _GENERATED_CACHE_DIRECTORIES for part in child.parts)
-                    or child.suffix in _GENERATED_CACHE_SUFFIXES
-                ):
-                    continue
-                child_metadata = child.lstat()
-                if stat.S_ISLNK(child_metadata.st_mode):
-                    raise SkillOptBridgeError(
-                        f"evaluation input must not be a symlink: {child}"
-                    )
-                if child.is_file():
-                    add_path(child)
+            if depth >= MAX_TREE_DEPTH:
+                raise SkillOptBridgeError(
+                    f"evaluation inputs exceed {MAX_TREE_DEPTH} directory levels"
+                )
+            children: list[tuple[Path, bool]] = []
+            try:
+                with os.scandir(path) as entries:
+                    for entry in entries:
+                        child = Path(entry.path)
+                        child_absolute = Path(os.path.abspath(child))
+                        newly_counted = child_absolute not in visited
+                        if newly_counted:
+                            entry_count += 1
+                            if entry_count > MAX_EVALUATION_INPUT_ENTRIES:
+                                raise SkillOptBridgeError(
+                                    "evaluation inputs exceed "
+                                    f"{MAX_EVALUATION_INPUT_ENTRIES} entries"
+                                )
+                        children.append((child, newly_counted))
+            except OSError as exc:
+                raise SkillOptBridgeError(
+                    f"cannot traverse evaluation inputs: {exc}"
+                ) from exc
+            for child, newly_counted in sorted(children, key=lambda item: item[0].name):
+                add_path(child, depth=depth + 1, counted=newly_counted)
             return
         if not stat.S_ISREG(metadata.st_mode):
             raise SkillOptBridgeError(
                 f"evaluation input must be a regular file: {path}"
+            )
+        total_bytes += metadata.st_size
+        if total_bytes > MAX_EVALUATION_INPUT_BYTES:
+            raise SkillOptBridgeError(
+                f"evaluation inputs exceed {MAX_EVALUATION_INPUT_BYTES} bytes"
             )
         relative = resolved.relative_to(suite.root).as_posix()
         files[relative] = {

@@ -26,6 +26,7 @@ from skivolve.skillopt_bridge import (
     SKILLOPT_COMMIT,
     PilotPlan,
     SkillOptBridgeError,
+    _environment_sha256,
     _evaluation_inputs_sha256,
     _resolve_output_directory,
     candidate_snapshot_sha256,
@@ -35,6 +36,8 @@ from skivolve.skillopt_bridge import (
     git_blob_bytes,
     invoke_skivolve,
     plan_from_json,
+    private_write_bytes,
+    private_write_json,
     run_command,
     sha256_bytes,
     sha256_file,
@@ -481,6 +484,98 @@ class SkillOptBridgeContractTests(unittest.TestCase):
 
         self.assertNotIn("PYTHONPATH", environment)
         self.assertEqual(environment["HOME"], "kept")
+
+    @unittest.skipUnless(os.name == "posix", "symlink semantics are POSIX-only")
+    def test_environment_binding_tracks_external_symlink_target_bytes(self) -> None:
+        environment = self.root / "environment"
+        environment.mkdir()
+        target = self.root / "python"
+        target.write_bytes(b"first")
+        (environment / "python").symlink_to(target)
+
+        first = _environment_sha256(environment)
+        target.write_bytes(b"second")
+
+        self.assertNotEqual(first, _environment_sha256(environment))
+
+    def test_environment_binding_bounds_empty_directory_traversal(self) -> None:
+        environment = self.root / "environment"
+        environment.mkdir()
+        for name in ("a", "b", "c"):
+            (environment / name).mkdir()
+
+        with (
+            patch("skivolve.skillopt_bridge.MAX_ENVIRONMENT_FILES", 2),
+            self.assertRaisesRegex(SkillOptBridgeError, "exceeds 2 entries"),
+        ):
+            _environment_sha256(environment)
+
+    def test_evaluation_input_binding_bounds_empty_directories(self) -> None:
+        fixture = self.root / "fixture"
+        fixture.mkdir()
+        for name in ("a", "b", "c"):
+            (fixture / name).mkdir()
+        suite = SimpleNamespace(
+            root=self.root,
+            path=self.suite,
+            shared_verifier_dir=None,
+        )
+        case = SimpleNamespace(
+            prompt_file=self.suite,
+            fixture_dir=fixture,
+            verifier=SimpleNamespace(argv=()),
+        )
+
+        with (
+            patch("skivolve.skillopt_bridge.MAX_EVALUATION_INPUT_ENTRIES", 3),
+            self.assertRaisesRegex(SkillOptBridgeError, "exceed 3 entries"),
+        ):
+            _evaluation_inputs_sha256(suite, (case,))
+
+    def test_evaluation_input_binding_bounds_total_bytes(self) -> None:
+        fixture = self.root / "fixture"
+        fixture.mkdir()
+        suite = SimpleNamespace(
+            root=self.root,
+            path=self.suite,
+            shared_verifier_dir=None,
+        )
+        case = SimpleNamespace(
+            prompt_file=self.suite,
+            fixture_dir=fixture,
+            verifier=SimpleNamespace(argv=()),
+        )
+
+        with (
+            patch("skivolve.skillopt_bridge.MAX_EVALUATION_INPUT_BYTES", 2),
+            self.assertRaisesRegex(SkillOptBridgeError, "exceed 2 bytes"),
+        ):
+            _evaluation_inputs_sha256(suite, (case,))
+
+    def test_private_artifact_writers_complete_short_writes(self) -> None:
+        real_write = os.write
+
+        def short_write(descriptor: int, value: bytes) -> int:
+            return real_write(descriptor, value[:3])
+
+        bytes_path = self.root / "bytes.bin"
+        json_path = self.root / "value.json"
+        with patch("skivolve.skillopt_bridge.os.write", side_effect=short_write):
+            private_write_bytes(bytes_path, b"abcdefghij")
+            private_write_json(json_path, {"value": "abcdefghij"})
+
+        self.assertEqual(bytes_path.read_bytes(), b"abcdefghij")
+        self.assertEqual(
+            json.loads(json_path.read_text(encoding="utf-8")),
+            {"value": "abcdefghij"},
+        )
+
+    def test_private_artifact_writer_rejects_zero_progress(self) -> None:
+        with (
+            patch("skivolve.skillopt_bridge.os.write", return_value=0),
+            self.assertRaisesRegex(SkillOptBridgeError, "made no progress"),
+        ):
+            private_write_bytes(self.root / "partial.bin", b"payload")
 
     def test_skivolve_invocation_cannot_import_from_candidate_checkout(self) -> None:
         completed = subprocess.CompletedProcess(

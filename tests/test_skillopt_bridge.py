@@ -685,8 +685,8 @@ class SkillOptBridgeContractTests(unittest.TestCase):
         auth.write_text('{"tokens":{}}\n', encoding="utf-8")
         config = self.output / "optimizer-config.toml"
         config.write_text('model = "fixture"\n', encoding="utf-8")
-        secret = self.root / "must-not-be-mounted"
-        secret.write_text("secret\n", encoding="utf-8")
+        host_only_marker = self.root / "must-not-be-mounted"
+        host_only_marker.write_text("unmounted\n", encoding="utf-8")
         fake_codex = self.root / "fake-codex"
         fake_codex.write_text(
             "#!/usr/bin/python3\n"
@@ -696,9 +696,9 @@ class SkillOptBridgeContractTests(unittest.TestCase):
             "schema = Path(args[args.index('--output-schema') + 1])\n"
             "json.loads(schema.read_text())\n"
             "last = Path(args[args.index('--output-last-message') + 1])\n"
-            f"secret_visible = Path({str(secret)!r}).exists()\n"
+            f"host_marker_visible = Path({str(host_only_marker)!r}).exists()\n"
             "last.write_text(json.dumps({'prompt': sys.stdin.read(), "
-            "'secret_visible': secret_visible}))\n",
+            "'host_marker_visible': host_marker_visible}))\n",
             encoding="utf-8",
         )
         fake_codex.chmod(0o700)
@@ -744,7 +744,7 @@ class SkillOptBridgeContractTests(unittest.TestCase):
         self.assertEqual(completed.returncode, 0, completed.stderr)
         captured = json.loads(last_message.read_text(encoding="utf-8"))
         self.assertEqual(captured["prompt"], "exact optimizer prompt")
-        self.assertFalse(captured["secret_visible"])
+        self.assertFalse(captured["host_marker_visible"])
 
     @unittest.skipUnless(
         os.name == "posix" and os.environ.get("SKIVOLVE_TEST_REAL_CODEX"),

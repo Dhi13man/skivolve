@@ -11,6 +11,10 @@ updates:
     labels:
       - dependencies
       - github-actions
+    groups:
+      codeql-action:
+        patterns:
+          - "github/codeql-action*"
   - package-ecosystem: pip
     directory: /
     exclude-paths:
